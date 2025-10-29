@@ -1,0 +1,10 @@
+material,thinkness_mm,num_letters,num_shapes,complexity_score,has_intricate_details,width_mm,height_mm,cutting_type,cutting_time_minutes,quantity,rush_job,price
+Acrylic,3,40,5,1,1,609,609,laser cutting,60,2,0,15000
+Acrylic,6,12,5,2,1,304.6,304.6,laser cutting,20,3,1,10000
+Acrylic,3,60,7,1,1,1218,609,laser cutting,60,6,0,15000
+Acrylic,4,20,3,2,1,304.6,304.6,laser cutting,30,14,1,10000
+Acrylic,3,80,0,2,1,1218,1218,laser cutting,2,20,1,25000
+Acrylic,3,40,0,2,1,1218,1218,laser cutting,8,18,1,25000
+Acrylic,6,2,6,3,1,304.6,304.6,laser cutting,120,3,0,10000
+Acrylic,4,50,0,3,1,304.6,304.6,laser cutting,360,6,0,18000
+Acrylic,8,10,7,4,1,304.6,304.6,laser cutting,45,7,0,35000
