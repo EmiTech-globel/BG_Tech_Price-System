@@ -4,6 +4,8 @@ Local web application for automatic job pricing
 """
 
 from flask import Flask, render_template, request, jsonify
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
 import pandas as pd
 import pickle
 import os
@@ -12,6 +14,70 @@ import re
 import math
 
 app = Flask(__name__)
+
+# Database configuration
+import os
+basedir = os.path.abspath(os.path.dirname(__file__))
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "instance", "quotes.db")}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# ========================================
+# DATABASE MODEL
+# ========================================
+
+class Quote(db.Model):
+    """Model for storing price quotes"""
+    id = db.Column(db.Integer, primary_key=True)
+    quote_number = db.Column(db.String(20), unique=True, nullable=False)
+    customer_name = db.Column(db.String(100))
+    customer_email = db.Column(db.String(100))
+    customer_phone = db.Column(db.String(20))
+    
+    # Job details
+    material = db.Column(db.String(50), nullable=False)
+    thickness_mm = db.Column(db.Float, nullable=False)
+    width_mm = db.Column(db.Float, nullable=False)
+    height_mm = db.Column(db.Float, nullable=False)
+    num_letters = db.Column(db.Integer, default=0)
+    num_shapes = db.Column(db.Integer, default=1)
+    complexity_score = db.Column(db.Integer, default=3)
+    has_intricate_details = db.Column(db.Integer, default=0)
+    cutting_type = db.Column(db.String(50), nullable=False)
+    cutting_time_minutes = db.Column(db.Float, nullable=False)
+    quantity = db.Column(db.Integer, default=1)
+    rush_job = db.Column(db.Integer, default=0)
+    
+    # Pricing
+    quoted_price = db.Column(db.Float, nullable=False)
+    
+    # Metadata
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.Text)
+    
+    def to_dict(self):
+        """Convert quote to dictionary"""
+        return {
+            'id': self.id,
+            'quote_number': self.quote_number,
+            'customer_name': self.customer_name,
+            'customer_email': self.customer_email,
+            'customer_phone': self.customer_phone,
+            'material': self.material,
+            'thickness_mm': self.thickness_mm,
+            'width_mm': self.width_mm,
+            'height_mm': self.height_mm,
+            'num_letters': self.num_letters,
+            'num_shapes': self.num_shapes,
+            'complexity_score': self.complexity_score,
+            'cutting_type': self.cutting_type,
+            'cutting_time_minutes': self.cutting_time_minutes,
+            'quantity': self.quantity,
+            'rush_job': self.rush_job,
+            'quoted_price': self.quoted_price,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'notes': self.notes
+        }
 
 # ========================================
 # LOAD TRAINED MODEL
@@ -228,25 +294,124 @@ def calculate_price():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/health')
-def health():
-    """Check if app is running"""
-    return jsonify({
-        'status': 'running',
-        'model_loaded': model is not None
-    })
+@app.route('/save_quote', methods=['POST'])
+def save_quote():
+    """Save a quote to database"""
+    try:
+        data = request.get_json()
+        
+        # Generate quote number
+        today = datetime.now().strftime('%Y%m%d')
+        last_quote = Quote.query.filter(Quote.quote_number.like(f'Q{today}%')).order_by(Quote.id.desc()).first()
+        
+        if last_quote:
+            last_num = int(last_quote.quote_number[-3:])
+            new_num = last_num + 1
+        else:
+            new_num = 1
+        
+        quote_number = f"Q{today}{new_num:03d}"
+        
+        # Create new quote
+        quote = Quote(
+            quote_number=quote_number,
+            customer_name=data.get('customer_name', ''),
+            customer_email=data.get('customer_email', ''),
+            customer_phone=data.get('customer_phone', ''),
+            material=data['material'],
+            thickness_mm=float(data['thickness']),
+            width_mm=float(data['width']),
+            height_mm=float(data['height']),
+            num_letters=int(data.get('letters', 0)),
+            num_shapes=int(data.get('shapes', 1)),
+            complexity_score=int(data.get('complexity', 3)),
+            has_intricate_details=int(data.get('details', 0)),
+            cutting_type=data['cuttingType'],
+            cutting_time_minutes=float(data['time']),
+            quantity=int(data.get('quantity', 1)),
+            rush_job=int(data.get('rush', 0)),
+            quoted_price=float(data['price']),
+            notes=data.get('notes', '')
+        )
+        
+        db.session.add(quote)
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'quote_number': quote_number,
+            'message': f'Quote {quote_number} saved successfully!'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/get_quotes', methods=['GET'])
+def get_quotes():
+    """Get all quotes"""
+    try:
+        quotes = Quote.query.order_by(Quote.created_at.desc()).all()
+        return jsonify({
+            'success': True,
+            'quotes': [quote.to_dict() for quote in quotes]
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/search_quotes', methods=['GET'])
+def search_quotes():
+    """Search quotes by customer name or quote number"""
+    try:
+        query = request.args.get('q', '')
+        
+        quotes = Quote.query.filter(
+            (Quote.customer_name.contains(query)) |
+            (Quote.quote_number.contains(query))
+        ).order_by(Quote.created_at.desc()).all()
+        
+        return jsonify({
+            'success': True,
+            'quotes': [quote.to_dict() for quote in quotes]
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/delete_quote/<int:quote_id>', methods=['DELETE'])
+def delete_quote(quote_id):
+    """Delete a quote"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if quote:
+            db.session.delete(quote)
+            db.session.commit()
+            return jsonify({'success': True, 'message': 'Quote deleted'})
+        else:
+            return jsonify({'success': False, 'error': 'Quote not found'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)})
 
 # ========================================
 # RUN APPLICATION
 # ========================================
 
 if __name__ == '__main__':
+    # Ensure required directories exist
+    os.makedirs('data', exist_ok=True)
+    os.makedirs('instance', exist_ok=True)
+    
+    # Create database tables
+    with app.app_context():
+        db.create_all()
+    
     print("\n" + "="*60)
-    print("🚀 CNC/LASER CUTTING PRICING SYSTEM")
+    print("CNC/LASER CUTTING PRICING SYSTEM")
     print("="*60)
-    print("\n✅ Server starting...")
-    print("📡 Open your browser and go to: http://localhost:5000")
-    print("\n💡 Press CTRL+C to stop the server")
+    print("\n Server starting...")
+    print("Database initialized")
+    print("Open your browser and go to: http://localhost:5000")
+    print("\n Press CTRL+C to stop the server")
     print("="*60 + "\n")
     
     app.run(debug=True, host='0.0.0.0', port=5000)

@@ -4,312 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CNC/Laser Cutting Price Quote System</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        
-        .header h1 {
-            font-size: 2em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            opacity: 0.9;
-            font-size: 1.1em;
-        }
-        
-        .tabs {
-            display: flex;
-            background: #f7f7f7;
-            border-bottom: 2px solid #e0e0e0;
-        }
-        
-        .tab {
-            flex: 1;
-            padding: 20px;
-            text-align: center;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.3s;
-            border-bottom: 3px solid transparent;
-        }
-        
-        .tab:hover {
-            background: #efefef;
-        }
-        
-        .tab.active {
-            background: white;
-            border-bottom: 3px solid #667eea;
-            color: #667eea;
-        }
-        
-        .content {
-            padding: 40px;
-        }
-        
-        .tab-content {
-            display: none;
-        }
-        
-        .tab-content.active {
-            display: block;
-            animation: fadeIn 0.5s;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .upload-area {
-            border: 3px dashed #667eea;
-            border-radius: 15px;
-            padding: 60px 20px;
-            text-align: center;
-            margin-bottom: 30px;
-            cursor: pointer;
-            transition: all 0.3s;
-            background: #f9f9ff;
-        }
-        
-        .upload-area:hover {
-            background: #f0f0ff;
-            border-color: #764ba2;
-        }
-        
-        .upload-area.dragover {
-            background: #e8e8ff;
-            border-color: #764ba2;
-            transform: scale(1.02);
-        }
-        
-        .upload-icon {
-            font-size: 4em;
-            margin-bottom: 20px;
-        }
-        
-        .form-group {
-            margin-bottom: 25px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
-        }
-        
-        input, select {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 1em;
-            transition: border 0.3s;
-        }
-        
-        input:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        .row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        
-        .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 15px 40px;
-            border: none;
-            border-radius: 10px;
-            font-size: 1.1em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s;
-            width: 100%;
-            margin-top: 10px;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
-        }
-        
-        .btn:active {
-            transform: translateY(0);
-        }
-        
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .result-box {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 15px;
-            margin-top: 30px;
-            display: none;
-        }
-        
-        .result-box.show {
-            display: block;
-            animation: slideUp 0.5s;
-        }
-        
-        @keyframes slideUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .price {
-            font-size: 3em;
-            font-weight: bold;
-            margin: 20px 0;
-            text-align: center;
-        }
-        
-        .details {
-            background: rgba(255,255,255,0.2);
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-        }
-        
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.3);
-        }
-        
-        .detail-row:last-child {
-            border-bottom: none;
-        }
-        
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-top: 10px;
-        }
-        
-        .checkbox-group input[type="checkbox"] {
-            width: auto;
-            cursor: pointer;
-        }
-        
-        .info-box {
-            background: #d1ecf1;
-            border-left: 4px solid #0c5460;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 5px;
-            color: #0c5460;
-        }
-        
-        .success-box {
-            background: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 5px;
-            color: #155724;
-        }
-        
-        .error-box {
-            background: #f8d7da;
-            border-left: 4px solid #dc3545;
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 5px;
-            color: #721c24;
-        }
-        
-        .file-info {
-            background: #e8e8ff;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            display: none;
-        }
-        
-        .file-info.show {
-            display: block;
-        }
-        
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 20px;
-        }
-        
-        .loading.show {
-            display: block;
-        }
-        
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎨 CNC/Laser Cutting Price Quote</h1>
+            <h1>CNC/Laser Cutting Price Quote</h1>
             <p>AI-Powered Pricing System</p>
         </div>
         
-        <div class="tabs">
-            <div class="tab active" onclick="showTab('upload')">
-                📤 Upload Design
-            </div>
-            <div class="tab" onclick="showTab('manual')">
-                ✍️ Manual Entry
-            </div>
+    <div class="tabs">
+        <div class="tab active" onclick="showTab('upload')">
+            📤 Upload Design
         </div>
+        <div class="tab" onclick="showTab('manual')">
+            ✍️ Manual Entry
+        </div>
+        <div class="tab" onclick="showTab('quotes')">
+            📋 Saved Quotes
+        </div>
+    </div>
         
         <div class="content">
             <!-- UPLOAD TAB -->
@@ -373,6 +87,7 @@
                             <option value="Plywood">Plywood</option>
                             <option value="Foam">Foam</option>
                             <option value="Cardboard">Cardboard</option>
+                            <option value="ACP">ACP (Aluminium Composite Panel)</option>
                         </select>
                     </div>
                     
@@ -409,10 +124,10 @@
                 
                 <div class="checkbox-group">
                     <input type="checkbox" id="uploadRush">
-                    <label for="uploadRush" style="margin: 0;">⚡ Rush Job (Priority Processing)</label>
+                    <label for="uploadRush" style="margin: 0;">Rush Job (Priority Processing)</label>
                 </div>
                 
-                <button class="btn" id="uploadCalcBtn" onclick="calculateFromUpload()" disabled>💰 Get Price Quote</button>
+                <button class="btn" id="uploadCalcBtn" onclick="calculateFromUpload()" disabled>Get Price Quote</button>
             </div>
             
             <!-- MANUAL TAB -->
@@ -429,6 +144,7 @@
                             <option value="Plywood">Plywood</option>
                             <option value="Foam">Foam</option>
                             <option value="Cardboard">Cardboard</option>
+                            <option value="ACP">ACP (Aluminium Composite Panel)</option>
                         </select>
                     </div>
                     
@@ -502,20 +218,39 @@
                 
                 <div class="checkbox-group">
                     <input type="checkbox" id="rush">
-                    <label for="rush" style="margin: 0;">⚡ Rush Job</label>
+                    <label for="rush" style="margin: 0;">Rush Job</label>
                 </div>
                 
-                <button class="btn" onclick="calculatePrice()">💰 Calculate Price</button>
+                <button class="btn" onclick="calculatePrice()">Calculate Price</button>
             </div>
         </div>
+       
+        <!-- QUOTES TAB -->
+            <div id="quotes" class="tab-content" style="padding: 20px;">
+                <div class="row" style="margin-bottom: 20px;">
+                    <div class="form-group">
+                        <label>Search Quotes</label>
+                        <input type="text" id="searchQuotes" placeholder="Search by customer name or quote number..." onkeyup="searchQuotes()">
+                    </div>
+                </div>
+                
+                <div id="quotesLoading" class="loading">
+                    <div class="spinner"></div>
+                    <p style="margin-top: 15px;">Loading quotes...</p>
+                </div>
+                
+                <div id="quotesContainer">
+                    <p style="text-align: center; color: #999;">No quotes saved yet. Create a quote to get started!</p>
+                </div>
+            </div>
         
         <!-- RESULT BOX -->
         <div class="result-box" id="resultBox">
-            <h2 style="text-align: center;">💰 Price Quote</h2>
+            <h2 style="text-align: center;">Price Quote</h2>
             <div class="price" id="priceDisplay">₦0.00</div>
             
             <div class="details">
-                <h3 style="margin-bottom: 15px;">📋 Job Details:</h3>
+                <h3 style="margin-bottom: 15px;">Job Details:</h3>
                 <div class="detail-row">
                     <span>Material:</span>
                     <strong id="resultMaterial">-</strong>
@@ -542,209 +277,40 @@
                 </div>
             </div>
             
-            <div style="text-align: center; margin-top: 30px; opacity: 0.8;">
+            <!-- Customer Info Form (Hidden by default) -->
+            <div id="customerForm" style="display: none; margin-top: 20px;">
+                <div style="background: rgba(255,255,255,0.3); padding: 20px; border-radius: 10px;">
+                    <h3 style="margin-bottom: 15px;">💾 Save This Quote</h3>
+                    <div style="margin-bottom: 15px;">
+                        <input type="text" id="customerName" placeholder="Customer Name (Optional)" style="width: 100%; padding: 10px; border: none; border-radius: 5px;">
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <input type="email" id="customerEmail" placeholder="Customer Email (Optional)" style="width: 100%; padding: 10px; border: none; border-radius: 5px;">
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <input type="tel" id="customerPhone" placeholder="Customer Phone (Optional)" style="width: 100%; padding: 10px; border: none; border-radius: 5px;">
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <textarea id="quoteNotes" placeholder="Notes (Optional)" style="width: 100%; padding: 10px; border: none; border-radius: 5px; min-height: 60px;"></textarea>
+                    </div>
+                    <button onclick="saveCurrentQuote()" style="background: white; color: #667eea; padding: 12px 30px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; width: 100%;">
+                        💾 Save Quote
+                    </button>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 20px;">
+                <button onclick="toggleCustomerForm()" id="saveQuoteBtn" style="background: rgba(255,255,255,0.3); color: white; padding: 12px 30px; border: 2px solid white; border-radius: 8px; font-weight: 600; cursor: pointer;">
+                    💾 Save This Quote
+                </button>
+            </div>
+
+            <div style="text-align: center; margin-top: 15px; opacity: 0.8;">
                 <small>Price generated by AI-powered pricing system</small>
             </div>
         </div>
     </div>
     
-    <script>
-        let extractedData = null;
-        
-        // Tab switching
-        function showTab(tabName) {
-            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-            
-            event.target.classList.add('active');
-            document.getElementById(tabName).classList.add('active');
-            
-            document.getElementById('resultBox').classList.remove('show');
-        }
-        
-        // File upload handling
-        const uploadArea = document.getElementById('uploadArea');
-        const fileInput = document.getElementById('fileInput');
-        
-        uploadArea.addEventListener('click', () => fileInput.click());
-        
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-        
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-        
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            const files = e.dataTransfer.files;
-            if (files.length > 0) {
-                handleFile(files[0]);
-            }
-        });
-        
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                handleFile(e.target.files[0]);
-            }
-        });
-        
-        async function handleFile(file) {
-            if (!file.name.toLowerCase().endsWith('.svg')) {
-                alert('Please upload an SVG file!');
-                return;
-            }
-            
-            const formData = new FormData();
-            formData.append('file', file);
-            
-            document.getElementById('uploadLoading').classList.add('show');
-            document.getElementById('fileInfo').classList.remove('show');
-            document.getElementById('uploadCalcBtn').disabled = true;
-            
-            try {
-                const response = await fetch('/analyze_file', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                
-                document.getElementById('uploadLoading').classList.remove('show');
-                
-                if (result.success) {
-                    extractedData = result;
-                    displayExtractedInfo(result);
-                    document.getElementById('uploadCalcBtn').disabled = false;
-                } else {
-                    alert('Error analyzing file: ' + result.error);
-                }
-            } catch (error) {
-                document.getElementById('uploadLoading').classList.remove('show');
-                alert('Error uploading file: ' + error.message);
-            }
-        }
-        
-        function displayExtractedInfo(data) {
-            document.getElementById('extractedWidth').textContent = data.width_mm + 'mm';
-            document.getElementById('extractedHeight').textContent = data.height_mm + 'mm';
-            document.getElementById('extractedShapes').textContent = data.num_shapes;
-            document.getElementById('extractedLetters').textContent = data.num_letters;
-            document.getElementById('extractedComplexity').textContent = data.complexity_score + '/5';
-            document.getElementById('extractedTime').textContent = data.cutting_time_minutes + ' minutes';
-            
-            document.getElementById('fileInfo').classList.add('show');
-        }
-        
-        async function calculateFromUpload() {
-            const material = document.getElementById('uploadMaterial').value;
-            const thickness = document.getElementById('uploadThickness').value;
-            const cuttingType = document.getElementById('uploadCuttingType').value;
-            const quantity = document.getElementById('uploadQuantity').value;
-            const rush = document.getElementById('uploadRush').checked ? 1 : 0;
-            
-            if (!material || !thickness) {
-                alert('Please select material and thickness!');
-                return;
-            }
-            
-            if (!extractedData) {
-                alert('Please upload a file first!');
-                return;
-            }
-            
-            const jobData = {
-                material: material,
-                thickness: parseFloat(thickness),
-                letters: extractedData.num_letters,
-                shapes: extractedData.num_shapes,
-                complexity: extractedData.complexity_score,
-                details: extractedData.has_intricate_details,
-                width: extractedData.width_mm,
-                height: extractedData.height_mm,
-                cuttingType: cuttingType,
-                time: extractedData.cutting_time_minutes,
-                quantity: parseInt(quantity),
-                rush: rush
-            };
-            
-            await sendPriceRequest(jobData);
-        }
-        
-        async function calculatePrice() {
-            const material = document.getElementById('material').value;
-            const thickness = document.getElementById('thickness').value;
-            const width = document.getElementById('width').value;
-            const height = document.getElementById('height').value;
-            const time = document.getElementById('time').value;
-            const cuttingType = document.getElementById('cuttingType').value;
-            const quantity = document.getElementById('quantity').value;
-            const letters = document.getElementById('letters').value;
-            const shapes = document.getElementById('shapes').value;
-            const complexity = document.getElementById('complexity').value;
-            const details = document.getElementById('details').checked ? 1 : 0;
-            const rush = document.getElementById('rush').checked ? 1 : 0;
-            
-            if (!material || !thickness || !width || !height || !time) {
-                alert('Please fill in all required fields (marked with *)!');
-                return;
-            }
-            
-            const jobData = {
-                material: material,
-                thickness: parseFloat(thickness),
-                letters: parseInt(letters),
-                shapes: parseInt(shapes),
-                complexity: parseInt(complexity),
-                details: details,
-                width: parseFloat(width),
-                height: parseFloat(height),
-                cuttingType: cuttingType,
-                time: parseFloat(time),
-                quantity: parseInt(quantity),
-                rush: rush
-            };
-            
-            await sendPriceRequest(jobData);
-        }
-        
-        async function sendPriceRequest(jobData) {
-            try {
-                const response = await fetch('/calculate_price', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(jobData)
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    displayResult(result.price, jobData);
-                } else {
-                    alert('Error calculating price: ' + result.error);
-                }
-            } catch (error) {
-                alert('Error: ' + error.message);
-            }
-        }
-        
-        function displayResult(price, jobData) {
-            document.getElementById('priceDisplay').textContent = '₦' + price.toLocaleString('en-NG', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-            document.getElementById('resultMaterial').textContent = jobData.material + ' (' + jobData.thickness + 'mm)';
-            document.getElementById('resultSize').textContent = jobData.width + 'mm × ' + jobData.height + 'mm';
-            document.getElementById('resultComplexity').textContent = jobData.complexity + '/5';
-            document.getElementById('resultCutting').textContent = jobData.cuttingType;
-            document.getElementById('resultQuantity').textContent = jobData.quantity;
-            document.getElementById('resultTime').textContent = jobData.time + ' minutes';
-            
-            document.getElementById('resultBox').classList.add('show');
-            document.getElementById('resultBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-    </script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>
