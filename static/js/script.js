@@ -299,14 +299,14 @@ function createQuoteCard(quote) {
     const rushBadge = quote.rush_job ? '<span style="background: #ff6b6b; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">⚡ RUSH</span>' : '';
     
     return `
-        <div style="background: #f9f9f9; border-left: 4px solid #667eea; padding: 20px; margin-bottom: 15px; border-radius: 8px;">
+        <div style="background: #f9f9f9; border-left: 4px solid #E89D3C; padding: 20px; margin-bottom: 15px; border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <div>
-                    <h3 style="margin: 0; color: #667eea;">${quote.quote_number}${rushBadge}</h3>
+                    <h3 style="margin: 0; color: #E89D3C;">${quote.quote_number}${rushBadge}</h3>
                     <small style="color: #999;">${quote.created_at}</small>
                 </div>
                 <div style="text-align: right;">
-                    <div style="font-size: 1.5em; font-weight: bold; color: #667eea;">₦${quote.quoted_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                    <div style="font-size: 1.5em; font-weight: bold; color: #E89D3C;">₦${quote.quoted_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
                 </div>
             </div>
             
@@ -388,6 +388,156 @@ document.addEventListener('DOMContentLoaded', function() {
         originalShowTab.call(this, tabName);
         if (tabName === 'quotes') {
             loadQuotes();
+        }
+    };
+});
+
+// Add Training Job Functions
+async function addTrainingJob() {
+    const material = document.getElementById('jobMaterial').value;
+    const thickness = document.getElementById('jobThickness').value;
+    const width = document.getElementById('jobWidth').value;
+    const height = document.getElementById('jobHeight').value;
+    const time = document.getElementById('jobTime').value;
+    const price = document.getElementById('jobPrice').value;
+    
+    if (!material || !thickness || !width || !height || !time || !price) {
+        alert('Please fill in all required fields (marked with *)!');
+        return;
+    }
+    
+    // Helper function to clean numbers (remove commas)
+    const cleanNum = (val) => {
+        if (typeof val === 'string') {
+            return val.replace(/,/g, '');
+        }
+        return val;
+    };
+    
+    const jobData = {
+        material: material,
+        thickness: cleanNum(thickness),
+        letters: cleanNum(document.getElementById('jobLetters').value),
+        shapes: cleanNum(document.getElementById('jobShapes').value),
+        complexity: document.getElementById('jobComplexity').value,
+        details: document.getElementById('jobDetails').checked ? 1 : 0,
+        width: cleanNum(width),
+        height: cleanNum(height),
+        cuttingType: document.getElementById('jobCuttingType').value,
+        time: cleanNum(time),
+        quantity: cleanNum(document.getElementById('jobQuantity').value),
+        rush: document.getElementById('jobRush').checked ? 1 : 0,
+        price: cleanNum(price)
+    };
+    
+    // Rest of the function stays the same...
+    try {
+        const response = await fetch('/add_training_job', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(jobData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('✅ ' + result.message);
+            
+            // Clear form
+            document.getElementById('jobMaterial').value = '';
+            document.getElementById('jobThickness').value = '';
+            document.getElementById('jobWidth').value = '';
+            document.getElementById('jobHeight').value = '';
+            document.getElementById('jobLetters').value = '0';
+            document.getElementById('jobShapes').value = '1';
+            document.getElementById('jobComplexity').value = '3';
+            document.getElementById('jobTime').value = '';
+            document.getElementById('jobQuantity').value = '1';
+            document.getElementById('jobPrice').value = '';
+            document.getElementById('jobDetails').checked = false;
+            document.getElementById('jobRush').checked = false;
+            
+            // Update job count
+            updateTrainingStats();
+        } else {
+            alert('❌ Error: ' + result.error);
+        }
+    } catch (error) {
+        alert('❌ Error: ' + error.message);
+    }
+}
+
+async function updateTrainingStats() {
+    try {
+        const response = await fetch('/get_training_stats');
+        const result = await response.json();
+        
+        if (result.success) {
+            document.getElementById('jobCount').textContent = result.total_jobs;
+            document.getElementById('modelAccuracy').textContent = result.r2_score;
+        }
+    } catch (error) {
+        console.error('Error updating stats:', error);
+    }
+}
+
+async function retrainModel() {
+    if (!confirm('Retrain the pricing model with current data? This may take 10-30 seconds.')) {
+        return;
+    }
+    
+    const statusDiv = document.getElementById('retrainStatus');
+    statusDiv.innerHTML = '<div class="spinner"></div><p>Retraining model... Please wait.</p>';
+    
+    try {
+        const response = await fetch('/retrain_model', {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            statusDiv.innerHTML = `
+                <div class="success-box">
+                    <strong>✅ ${result.message}</strong>
+                    <p style="margin-top: 10px;">
+                        Total Jobs: ${result.total_jobs}<br>
+                        New R² Score: ${result.r2_score}<br>
+                        Average Error: ₦${result.mae.toLocaleString('en-NG', {minimumFractionDigits: 2})}
+                    </p>
+                </div>
+            `;
+            
+            // Update stats display
+            updateTrainingStats();
+        } else {
+            statusDiv.innerHTML = `
+                <div class="error-box">
+                    <strong>❌ Error:</strong> ${result.error}
+                </div>
+            `;
+        }
+    } catch (error) {
+        statusDiv.innerHTML = `
+            <div class="error-box">
+                <strong>❌ Error:</strong> ${error.message}
+            </div>
+        `;
+    }
+}
+
+// Load training stats when Add Job tab is opened
+document.addEventListener('DOMContentLoaded', function() {
+    const originalShowTab = window.showTab;
+    window.showTab = function(tabName) {
+        originalShowTab.call(this, tabName);
+        
+        if (tabName === 'quotes') {
+            loadQuotes();
+        } else if (tabName === 'addjob') {
+            updateTrainingStats();
         }
     };
 });

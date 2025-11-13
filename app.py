@@ -1,5 +1,6 @@
 """
 CNC/Laser Cutting Pricing System - Flask Backend
+BrainGain Tech Innovation Solutions
 Local web application for automatic job pricing
 """
 
@@ -16,7 +17,6 @@ import math
 app = Flask(__name__)
 
 # Database configuration
-import os
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "instance", "quotes.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -235,6 +235,21 @@ def predict_price(job_data):
         return None
 
 # ========================================
+# HELPER FUNCTIONS
+# ========================================
+
+def clean_number(value):
+    """Remove commas, currency symbols and convert to string for safe parsing"""
+    if value is None:
+        return '0'
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        cleaned = value.replace(',', '').replace('₦', '').replace('$', '').strip()
+        return cleaned if cleaned else '0'
+    return str(value)
+
+# ========================================
 # FLASK ROUTES
 # ========================================
 
@@ -392,6 +407,220 @@ def delete_quote(quote_id):
         db.session.rollback()
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/add_training_job', methods=['POST'])
+def add_training_job():
+    """Add a new job to training data CSV"""
+    try:
+        data = request.get_json()
+        
+        # Read existing CSV
+        csv_path = CSV_PATH
+        
+        if not os.path.exists(csv_path):
+            return jsonify({'success': False, 'error': 'CSV file not found'})
+        
+        df = pd.read_csv(csv_path)
+        
+        # Get column order from existing CSV
+        column_order = df.columns.tolist()
+        
+        # Prepare new job data with cleaned numbers
+        new_job = {
+            'material': data.get('material', ''),
+            'thickness_mm': float(clean_number(data.get('thickness', 0))),
+            'num_letters': int(clean_number(data.get('letters', 0))),
+            'num_shapes': int(clean_number(data.get('shapes', 1))),
+            'complexity_score': int(clean_number(data.get('complexity', 3))),
+            'has_intricate_details': int(clean_number(data.get('details', 0))),
+            'width_mm': float(clean_number(data.get('width', 0))),
+            'height_mm': float(clean_number(data.get('height', 0))),
+            'cutting_type': data.get('cuttingType', ''),
+            'cutting_time_minutes': float(clean_number(data.get('time', 0))),
+            'quantity': int(clean_number(data.get('quantity', 1))),
+            'rush_job': int(clean_number(data.get('rush', 0))),
+            'price': float(clean_number(data.get('price', 0)))
+        }
+        
+        # Create new row with same column order as CSV
+        new_row = pd.DataFrame([new_job])
+        
+        # Reorder to match existing CSV columns
+        new_row = new_row[column_order]
+        
+        # Append new row
+        df = pd.concat([df, new_row], ignore_index=True)
+        
+        # Save back to CSV
+        df.to_csv(csv_path, index=False)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Job added successfully! Total jobs: {len(df)}',
+            'total_jobs': len(df)
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
+
+@app.route('/get_training_stats', methods=['GET'])
+def get_training_stats():
+    """Get current training data statistics"""
+    try:
+        # Try to load model metadata first
+        if os.path.exists(MODEL_PATH):
+            with open(MODEL_PATH, 'rb') as f:
+                saved_data = pickle.load(f)
+                total_jobs = saved_data.get('total_jobs', 0)
+                r2_score_val = saved_data.get('r2_score', 0)
+        else:
+            # Fallback to CSV count
+            if os.path.exists(CSV_PATH):
+                df = pd.read_csv(CSV_PATH)
+                total_jobs = len(df)
+            else:
+                total_jobs = 0
+            r2_score_val = 0
+        
+        return jsonify({
+            'success': True,
+            'total_jobs': total_jobs,
+            'r2_score': round(r2_score_val, 3)
+        })
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/retrain_model', methods=['POST'])
+def retrain_model():
+    """Retrain the pricing model with current data"""
+    try:
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import mean_absolute_error, r2_score as calculate_r2
+        from sklearn.ensemble import RandomForestRegressor
+        
+        # Load data
+        df = pd.read_csv(CSV_PATH)
+        
+        # Clean price column if it contains strings
+        if df['price'].dtype == 'object':
+            df['price'] = df['price'].apply(lambda x: clean_number(x))
+            df['price'] = pd.to_numeric(df['price'], errors='coerce')
+        
+        # Clean all numeric columns
+        numeric_cols = ['thickness_mm', 'width_mm', 'height_mm', 'cutting_time_minutes']
+        for col in numeric_cols:
+            if col in df.columns and df[col].dtype == 'object':
+                df[col] = df[col].apply(lambda x: clean_number(x))
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Remove rows with any missing values
+        df = df.dropna()
+
+        # Determine number of new rows since last saved model (if present)
+        prev_total = 0
+        if os.path.exists(MODEL_PATH):
+            try:
+                with open(MODEL_PATH, 'rb') as f:
+                    prev_saved = pickle.load(f)
+                    prev_total = int(prev_saved.get('total_jobs', 0) or 0)
+            except Exception:
+                prev_total = 0
+
+        new_jobs = max(0, len(df) - prev_total)
+
+        # If a previous model exists, require at least 20 NEW jobs since that model
+        if prev_total > 0:
+            if new_jobs < 20:
+                return jsonify({
+                    'success': False,
+                    'error': f'Need at least 20 NEW jobs since last model to retrain. New jobs: {new_jobs} (total rows: {len(df)})'
+                })
+        else:
+            # No previous model: require at least 20 total rows
+            if len(df) < 20:
+                return jsonify({
+                    'success': False,
+                    'error': f'Need at least 20 jobs to retrain effectively. Current: {len(df)} jobs'
+                })
+        
+        # Prepare data for training
+        df_encoded = df.copy()
+        df_encoded = pd.get_dummies(df_encoded, columns=['material', 'cutting_type'], 
+                                    prefix=['mat', 'cut'])
+        
+        X = df_encoded.drop('price', axis=1)
+        y = df_encoded['price']
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+        
+        # Train new model
+        new_model = RandomForestRegressor(
+            n_estimators=150,
+            max_depth=20,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        new_model.fit(X_train, y_train)
+        
+        # Evaluate model
+        y_pred = new_model.predict(X_test)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = calculate_r2(y_test, y_pred)
+        
+        # Save new model
+        model_data = {
+            'model': new_model,
+            'columns': X.columns,
+            'training_date': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'total_jobs': len(df),
+            'r2_score': r2,
+            'mae': mae
+        }
+        
+        with open(MODEL_PATH, 'wb') as f:
+            pickle.dump(model_data, f)
+        
+        # Update global model
+        global model, columns
+        model = new_model
+        columns = X.columns
+        
+        return jsonify({
+            'success': True,
+            'message': 'Model retrained successfully!',
+            'total_jobs': len(df),
+            'r2_score': round(r2, 3),
+            'mae': round(mae, 2)
+        })
+        
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
+
+@app.route('/health')
+def health():
+    """Check if app is running"""
+    return jsonify({
+        'status': 'running',
+        'model_loaded': model is not None,
+        'company': 'BrainGain Tech Innovation Solutions'
+    })
+
 # ========================================
 # RUN APPLICATION
 # ========================================
@@ -404,14 +633,5 @@ if __name__ == '__main__':
     # Create database tables
     with app.app_context():
         db.create_all()
-    
-    print("\n" + "="*60)
-    print("CNC/LASER CUTTING PRICING SYSTEM")
-    print("="*60)
-    print("\n Server starting...")
-    print("Database initialized")
-    print("Open your browser and go to: http://localhost:5000")
-    print("\n Press CTRL+C to stop the server")
-    print("="*60 + "\n")
-    
+
     app.run(debug=True, host='0.0.0.0', port=5000)
