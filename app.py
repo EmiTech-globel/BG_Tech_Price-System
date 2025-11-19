@@ -76,9 +76,54 @@ class Quote(db.Model):
             'rush_job': self.rush_job,
             'quoted_price': self.quoted_price,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-            'notes': self.notes
+            'notes': self.notes,
+            'items': [item.to_dict() for item in self.items] if hasattr(self, 'items') else []
         }
 
+class QuoteItem(db.Model):
+    """Model for individual items in a quote"""
+    id = db.Column(db.Integer, primary_key=True)
+    quote_id = db.Column(db.Integer, db.ForeignKey('quote.id'), nullable=False)
+    
+    # Job details for this item
+    item_name = db.Column(db.String(200))
+    material = db.Column(db.String(50), nullable=False)
+    thickness_mm = db.Column(db.Float, nullable=False)
+    width_mm = db.Column(db.Float, nullable=False)
+    height_mm = db.Column(db.Float, nullable=False)
+    num_letters = db.Column(db.Integer, default=0)
+    num_shapes = db.Column(db.Integer, default=1)
+    complexity_score = db.Column(db.Integer, default=3)
+    has_intricate_details = db.Column(db.Integer, default=0)
+    cutting_type = db.Column(db.String(50), nullable=False)
+    cutting_time_minutes = db.Column(db.Float, nullable=False)
+    quantity = db.Column(db.Integer, default=1)
+    rush_job = db.Column(db.Integer, default=0)
+    
+    # Pricing for this item
+    item_price = db.Column(db.Float, nullable=False)
+    
+    # Relationship
+    quote = db.relationship('Quote', backref=db.backref('items', lazy=True, cascade='all, delete-orphan'))
+    
+    def to_dict(self):
+        """Convert item to dictionary"""
+        return {
+            'id': self.id,
+            'item_name': self.item_name,
+            'material': self.material,
+            'thickness_mm': self.thickness_mm,
+            'width_mm': self.width_mm,
+            'height_mm': self.height_mm,
+            'num_letters': self.num_letters,
+            'num_shapes': self.num_shapes,
+            'complexity_score': self.complexity_score,
+            'cutting_type': self.cutting_type,
+            'cutting_time_minutes': self.cutting_time_minutes,
+            'quantity': self.quantity,
+            'rush_job': self.rush_job,
+            'item_price': self.item_price
+        }
 # ========================================
 # LOAD TRAINED MODEL
 # ========================================
@@ -620,6 +665,96 @@ def health():
         'model_loaded': model is not None,
         'company': 'BrainGain Tech Innovation Solutions'
     })
+
+@app.route('/save_bulk_quote', methods=['POST'])
+def save_bulk_quote():
+    """Save a quote with multiple items"""
+    try:
+        data = request.get_json()
+        
+        # Generate quote number
+        today = datetime.now().strftime('%Y%m%d')
+        last_quote = Quote.query.filter(Quote.quote_number.like(f'Q{today}%')).order_by(Quote.id.desc()).first()
+        
+        if last_quote:
+            last_num = int(last_quote.quote_number[-3:])
+            new_num = last_num + 1
+        else:
+            new_num = 1
+        
+        quote_number = f"Q{today}{new_num:03d}"
+        
+        # Calculate total price from all items
+        items_data = data.get('items', [])
+        total_price = sum(float(item['price']) for item in items_data)
+        
+        # Use first item's details for main quote (for backward compatibility)
+        first_item = items_data[0] if items_data else {}
+        
+        # Create main quote
+        quote = Quote(
+            quote_number=quote_number,
+            customer_name=data.get('customer_name', ''),
+            customer_email=data.get('customer_email', ''),
+            customer_phone=data.get('customer_phone', ''),
+            material=first_item.get('material', ''),
+            thickness_mm=float(first_item.get('thickness', 0)),
+            width_mm=float(first_item.get('width', 0)),
+            height_mm=float(first_item.get('height', 0)),
+            num_letters=int(first_item.get('letters', 0)),
+            num_shapes=int(first_item.get('shapes', 1)),
+            complexity_score=int(first_item.get('complexity', 3)),
+            has_intricate_details=int(first_item.get('details', 0)),
+            cutting_type=first_item.get('cuttingType', ''),
+            cutting_time_minutes=float(first_item.get('time', 0)),
+            quantity=int(first_item.get('quantity', 1)),
+            rush_job=int(first_item.get('rush', 0)),
+            quoted_price=total_price,
+            notes=data.get('notes', '')
+        )
+        
+        db.session.add(quote)
+        db.session.flush()  # Get the quote.id
+        
+        # Create quote items
+        for item_data in items_data:
+            quote_item = QuoteItem(
+                quote_id=quote.id,
+                item_name=item_data.get('name', 'Item'),
+                material=item_data.get('material', ''),
+                thickness_mm=float(item_data.get('thickness', 0)),
+                width_mm=float(item_data.get('width', 0)),
+                height_mm=float(item_data.get('height', 0)),
+                num_letters=int(item_data.get('letters', 0)),
+                num_shapes=int(item_data.get('shapes', 1)),
+                complexity_score=int(item_data.get('complexity', 3)),
+                has_intricate_details=int(item_data.get('details', 0)),
+                cutting_type=item_data.get('cuttingType', ''),
+                cutting_time_minutes=float(item_data.get('time', 0)),
+                quantity=int(item_data.get('quantity', 1)),
+                rush_job=int(item_data.get('rush', 0)),
+                item_price=float(item_data.get('price', 0))
+            )
+            db.session.add(quote_item)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'quote_number': quote_number,
+            'total_price': total_price,
+            'items_count': len(items_data),
+            'message': f'Bulk quote {quote_number} saved with {len(items_data)} items!'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
 
 # ========================================
 # RUN APPLICATION

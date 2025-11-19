@@ -3,6 +3,8 @@
 let extractedData = null;
 let currentJobData = null;
 let currentPrice = null;
+let bulkItems = [];
+let bulkItemCounter = 0;
 
 // Tab switching
 function showTab(tabName) {
@@ -541,3 +543,187 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
 });
+
+// ========================================
+// BULK ORDER FUNCTIONS
+// ========================================
+
+async function addItemToBulk() {
+    const material = document.getElementById('bulkMaterial').value;
+    const thickness = document.getElementById('bulkThickness').value;
+    const width = document.getElementById('bulkWidth').value;
+    const height = document.getElementById('bulkHeight').value;
+    const time = document.getElementById('bulkTime').value;
+    
+    if (!material || !thickness || !width || !height || !time) {
+        alert('Please fill in all required fields (marked with *)!');
+        return;
+    }
+    
+    const itemName = document.getElementById('bulkItemName').value || `Item ${bulkItemCounter + 1}`;
+    
+    const itemData = {
+        name: itemName,
+        material: material,
+        thickness: parseFloat(thickness),
+        letters: parseInt(document.getElementById('bulkLetters').value),
+        shapes: parseInt(document.getElementById('bulkShapes').value),
+        complexity: parseInt(document.getElementById('bulkComplexity').value),
+        details: document.getElementById('bulkDetails').checked ? 1 : 0,
+        width: parseFloat(width),
+        height: parseFloat(height),
+        cuttingType: document.getElementById('bulkCuttingType').value,
+        time: parseFloat(time),
+        quantity: parseInt(document.getElementById('bulkQuantity').value),
+        rush: document.getElementById('bulkRush').checked ? 1 : 0
+    };
+    
+    // Calculate price for this item
+    try {
+        const response = await fetch('/calculate_price', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(itemData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Add price to item data
+            itemData.price = result.price;
+            itemData.id = bulkItemCounter++;
+            
+            // Add to bulk items array
+            bulkItems.push(itemData);
+            
+            // Update display
+            updateBulkItemsDisplay();
+            
+            // Clear form
+            clearBulkForm();
+            
+            alert(`✅ "${itemName}" added! Price: ₦${result.price.toLocaleString('en-NG', {minimumFractionDigits: 2})}`);
+        } else {
+            alert('❌ Error calculating price: ' + result.error);
+        }
+    } catch (error) {
+        alert('❌ Error: ' + error.message);
+    }
+}
+
+function updateBulkItemsDisplay() {
+    const container = document.getElementById('itemsContainer');
+    const countSpan = document.getElementById('itemCount');
+    const totalDiv = document.getElementById('bulkTotal');
+    const grandTotalSpan = document.getElementById('grandTotal');
+    
+    countSpan.textContent = bulkItems.length;
+    
+    if (bulkItems.length === 0) {
+        container.innerHTML = '<p style="text-align: center; color: #999; padding: 20px;">No items added yet. Add your first item below!</p>';
+        totalDiv.style.display = 'none';
+        return;
+    }
+    
+    // Calculate grand total
+    const grandTotal = bulkItems.reduce((sum, item) => sum + item.price, 0);
+    grandTotalSpan.textContent = '₦' + grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    
+    // Display items
+    container.innerHTML = bulkItems.map((item, index) => `
+        <div style="background: #f9f9f9; border-left: 4px solid #E89D3C; padding: 20px; margin-bottom: 15px; border-radius: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <div>
+                    <h4 style="margin: 0; color: #E89D3C;">${item.name}</h4>
+                    <small style="color: #999;">Item #${index + 1}</small>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 1.5em; font-weight: bold; color: #E89D3C;">₦${item.price.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                    <button onclick="removeItemFromBulk(${item.id})" style="background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; margin-top: 5px;">🗑️ Remove</button>
+                </div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+                <div><strong>Material:</strong> ${item.material} (${item.thickness}mm)</div>
+                <div><strong>Size:</strong> ${item.width}×${item.height}mm</div>
+                <div><strong>Cutting:</strong> ${item.cuttingType}</div>
+                <div><strong>Quantity:</strong> ${item.quantity}</div>
+                <div><strong>Time:</strong> ${item.time} min</div>
+                <div><strong>Complexity:</strong> ${item.complexity}/5</div>
+            </div>
+        </div>
+    `).join('');
+    
+    totalDiv.style.display = 'block';
+}
+
+function removeItemFromBulk(itemId) {
+    if (!confirm('Remove this item from the order?')) {
+        return;
+    }
+    
+    bulkItems = bulkItems.filter(item => item.id !== itemId);
+    updateBulkItemsDisplay();
+}
+
+function clearBulkForm() {
+    document.getElementById('bulkItemName').value = '';
+    document.getElementById('bulkMaterial').value = '';
+    document.getElementById('bulkThickness').value = '';
+    document.getElementById('bulkWidth').value = '';
+    document.getElementById('bulkHeight').value = '';
+    document.getElementById('bulkLetters').value = '0';
+    document.getElementById('bulkShapes').value = '1';
+    document.getElementById('bulkComplexity').value = '3';
+    document.getElementById('bulkTime').value = '';
+    document.getElementById('bulkQuantity').value = '1';
+    document.getElementById('bulkDetails').checked = false;
+    document.getElementById('bulkRush').checked = false;
+}
+
+async function saveBulkQuote() {
+    if (bulkItems.length === 0) {
+        alert('Please add at least one item to the order!');
+        return;
+    }
+    
+    // Ask for customer info
+    const customerName = prompt('Customer Name (optional):') || '';
+    const customerEmail = prompt('Customer Email (optional):') || '';
+    const customerPhone = prompt('Customer Phone (optional):') || '';
+    const notes = prompt('Order Notes (optional):') || '';
+    
+    const quoteData = {
+        items: bulkItems,
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_phone: customerPhone,
+        notes: notes
+    };
+    
+    try {
+        const response = await fetch('/save_bulk_quote', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(quoteData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            alert(`✅ ${result.message}\n\nQuote Number: ${result.quote_number}\nTotal Items: ${result.items_count}\nTotal Price: ₦${result.total_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}`);
+            
+            // Clear bulk order
+            bulkItems = [];
+            bulkItemCounter = 0;
+            updateBulkItemsDisplay();
+        } else {
+            alert('❌ Error saving quote: ' + result.error);
+        }
+    } catch (error) {
+        alert('❌ Error: ' + error.message);
+    }
+}
