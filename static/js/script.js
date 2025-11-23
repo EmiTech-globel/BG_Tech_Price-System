@@ -6,18 +6,47 @@ let currentPrice = null;
 let bulkItems = [];
 let bulkItemCounter = 0;
 
-// Tab switching
-function showTab(tabName) {
-    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
-    event.target.classList.add('active');
-    document.getElementById(tabName).classList.add('active');
-    
-    document.getElementById('resultBox').classList.remove('show');
-}
+// ========================================
+// TAB MANAGEMENT FUNCTIONS
+// ========================================
 
-// File upload handling
+function showTab(tabName) {
+    console.log("Switching to tab:", tabName);
+    
+    // Remove active class from all tabs
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    
+    // Remove active class from all tab contents
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    
+    // Add active class to clicked tab and corresponding content
+    const activeTab = document.querySelector(`.tab[onclick*="${tabName}"]`);
+    const activeContent = document.getElementById(tabName);
+    
+    if (activeTab && activeContent) {
+        activeTab.classList.add('active');
+        activeContent.classList.add('active');
+    }
+    
+    // Hide result box when switching tabs
+    document.getElementById('resultBox').classList.remove('show');
+    
+    // Load data for specific tabs
+    if (tabName === 'quotes') {
+        loadQuotes();
+    } else if (tabName === 'addjob') {
+        updateTrainingStats();
+    }
+}
+// ========================================
+
+// FILE UPLOAD AND ANALYSIS FUNCTIONS
+// ========================================
+
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
 
@@ -48,8 +77,11 @@ fileInput.addEventListener('change', (e) => {
 });
 
 async function handleFile(file) {
-    if (!file.name.toLowerCase().endsWith('.svg')) {
-        alert('Please upload an SVG file!');
+    const isSVG = file.name.toLowerCase().endsWith('.svg');
+    const isDXF = file.name.toLowerCase().endsWith('.dxf');
+    
+    if (!isSVG && !isDXF) {
+        alert('Please upload a DXF or SVG file!');
         return;
     }
     
@@ -61,7 +93,10 @@ async function handleFile(file) {
     document.getElementById('uploadCalcBtn').disabled = true;
     
     try {
-        const response = await fetch('/analyze_file', {
+        // Choose endpoint based on file type
+        const endpoint = isDXF ? '/analyze_dxf_file' : '/analyze_file';
+        
+        const response = await fetch(endpoint, {
             method: 'POST',
             body: formData
         });
@@ -71,9 +106,20 @@ async function handleFile(file) {
         document.getElementById('uploadLoading').classList.remove('show');
         
         if (result.success) {
-            extractedData = result;
-            displayExtractedInfo(result);
-            document.getElementById('uploadCalcBtn').disabled = false;
+            if (result.file_type === 'dxf' && result.multiple_items && result.total_items > 1) {
+                // DXF multiple jobs detected via spatial analysis
+                alert(`✅ ${result.message}`);
+                displayDxfMultiItemResults(result);
+            } else {
+                // Single job (DXF or SVG)
+                extractedData = result.items ? result.items[0] : result;
+                displayExtractedInfo(extractedData);
+                document.getElementById('uploadCalcBtn').disabled = false;
+                
+                if (result.file_type === 'dxf') {
+                    alert(`✅ ${result.message}`);
+                }
+            }
         } else {
             alert('Error analyzing file: ' + result.error);
         }
@@ -185,6 +231,51 @@ async function sendPriceRequest(jobData) {
         }
     } catch (error) {
         alert('Error: ' + error.message);
+    }
+}
+
+function displayDxfMultiItemResults(result) {
+    console.log("Displaying DXF multi-item results:", result);
+    
+    try {
+        // Convert DXF items to bulk items format
+        bulkItems = result.items.map((item, index) => ({
+            id: index,
+            name: item.name,
+            material: '',
+            thickness: 0,
+            width: item.width_mm,
+            height: item.height_mm,
+            letters: item.num_letters,
+            shapes: item.num_shapes,
+            complexity: item.complexity_score,
+            details: item.has_intricate_details,
+            cuttingType: 'Laser Cutting',
+            time: item.cutting_time_minutes,
+            quantity: 1,
+            rush: 0,
+            price: 0 // Will be calculated later
+        }));
+        
+        console.log("Converted bulk items:", bulkItems);
+        
+        // Update the bulk items display
+        updateBulkItemsDisplay();
+        
+        // Switch to bulk order tab safely
+        const bulkTab = document.querySelector('.tab[onclick*="bulk"]');
+        if (bulkTab) {
+            bulkTab.click(); // Use the existing tab click handler
+        } else {
+            // Fallback: manually switch to bulk tab
+            showTab('bulk');
+        }
+        
+        console.log("Successfully displayed DXF multi-items");
+        
+    } catch (error) {
+        console.error("Error displaying DXF multi-items:", error);
+        alert('Error displaying multiple jobs. Please check console for details.');
     }
 }
 
@@ -614,10 +705,17 @@ async function addItemToBulk() {
 }
 
 function updateBulkItemsDisplay() {
+    console.log("Updating bulk items display, count:", bulkItems.length);
+    
     const container = document.getElementById('itemsContainer');
     const countSpan = document.getElementById('itemCount');
     const totalDiv = document.getElementById('bulkTotal');
     const grandTotalSpan = document.getElementById('grandTotal');
+    
+    if (!container || !countSpan || !totalDiv || !grandTotalSpan) {
+        console.error("Bulk display elements not found");
+        return;
+    }
     
     countSpan.textContent = bulkItems.length;
     
@@ -627,8 +725,8 @@ function updateBulkItemsDisplay() {
         return;
     }
     
-    // Calculate grand total
-    const grandTotal = bulkItems.reduce((sum, item) => sum + item.price, 0);
+    // Calculate grand total (will be 0 until prices are calculated)
+    const grandTotal = bulkItems.reduce((sum, item) => sum + (item.price || 0), 0);
     grandTotalSpan.textContent = '₦' + grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2});
     
     // Display items
@@ -640,22 +738,103 @@ function updateBulkItemsDisplay() {
                     <small style="color: #999;">Item #${index + 1}</small>
                 </div>
                 <div style="text-align: right;">
-                    <div style="font-size: 1.5em; font-weight: bold; color: #E89D3C;">₦${item.price.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                    <div style="font-size: 1.5em; font-weight: bold; color: #E89D3C;">
+                        ${item.price ? '₦' + item.price.toLocaleString('en-NG', {minimumFractionDigits: 2}) : 'Price pending...'}
+                    </div>
                     <button onclick="removeItemFromBulk(${item.id})" style="background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; margin-top: 5px;">🗑️ Remove</button>
                 </div>
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-                <div><strong>Material:</strong> ${item.material} (${item.thickness}mm)</div>
                 <div><strong>Size:</strong> ${item.width}×${item.height}mm</div>
-                <div><strong>Cutting:</strong> ${item.cuttingType}</div>
-                <div><strong>Quantity:</strong> ${item.quantity}</div>
-                <div><strong>Time:</strong> ${item.time} min</div>
+                <div><strong>Shapes:</strong> ${item.shapes}</div>
+                <div><strong>Letters:</strong> ${item.letters}</div>
                 <div><strong>Complexity:</strong> ${item.complexity}/5</div>
+            </div>
+            <div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 5px;">
+                <strong>Set Material & Thickness to Calculate Price:</strong>
+                <div class="row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <select onchange="updateBulkItemMaterial(${item.id}, this.value)" style="padding: 5px;">
+                            <option value="">Select Material</option>
+                            <option value="Acrylic">Acrylic</option>
+                            <option value="Wood">Wood</option>
+                            <option value="Metal">Metal</option>
+                            <option value="MDF">MDF</option>
+                            <option value="ACP">ACP</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <select onchange="updateBulkItemThickness(${item.id}, this.value)" style="padding: 5px;">
+                            <option value="">Select Thickness</option>
+                            <option value="3">3mm</option>
+                            <option value="6">6mm</option>
+                            <option value="9">9mm</option>
+                            <option value="12">12mm</option>
+                        </select>
+                    </div>
+                </div>
             </div>
         </div>
     `).join('');
     
     totalDiv.style.display = 'block';
+}
+
+function updateBulkItemMaterial(itemId, material) {
+    const item = bulkItems.find(item => item.id === itemId);
+    if (item) {
+        item.material = material;
+        calculateBulkItemPrice(itemId);
+    }
+}
+
+function updateBulkItemThickness(itemId, thickness) {
+    const item = bulkItems.find(item => item.id === itemId);
+    if (item) {
+        item.thickness = parseFloat(thickness);
+        calculateBulkItemPrice(itemId);
+    }
+}
+
+async function calculateBulkItemPrice(itemId) {
+    const item = bulkItems.find(item => item.id === itemId);
+    if (!item || !item.material || !item.thickness) {
+        return;
+    }
+    
+    const jobData = {
+        material: item.material,
+        thickness: item.thickness,
+        letters: item.letters,
+        shapes: item.shapes,
+        complexity: item.complexity,
+        details: item.details,
+        width: item.width,
+        height: item.height,
+        cuttingType: item.cuttingType,
+        time: item.time,
+        quantity: item.quantity,
+        rush: item.rush
+    };
+    
+    try {
+        const response = await fetch('/calculate_price', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(jobData)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            item.price = result.price;
+            updateBulkItemsDisplay();
+        }
+    } catch (error) {
+        console.error('Error calculating bulk item price:', error);
+    }
 }
 
 function removeItemFromBulk(itemId) {

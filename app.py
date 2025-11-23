@@ -10,8 +10,10 @@ from datetime import datetime
 import pandas as pd
 import pickle
 import os
-import xml.etree.ElementTree as ET
 import re
+import xml.etree.ElementTree as ET
+import ezdxf
+from ezdxf.math import Vec2
 import math
 
 app = Flask(__name__)
@@ -253,6 +255,451 @@ def estimate_cutting_time(path_length_mm, width_mm, height_mm):
     return max(5, total_time_min)
 
 # ========================================
+# DXF FILE ANALYZER FUNCTIONS
+# ========================================
+
+def analyze_dxf_file(file_content):
+    """Analyze DXF file using spatial detection - Fixed bytes handling"""
+    try:
+        print(f"=== DXF Spatial Analysis Started ===")
+        print(f"File content type: {type(file_content)}")
+        print(f"File content length: {len(file_content) if file_content else 0}")
+        
+        # Ensure we have bytes (handle both string and bytes input)
+        if isinstance(file_content, str):
+            print("Converting string to bytes...")
+            file_content = file_content.encode('utf-8')
+        
+        if not file_content:
+            return {
+                'success': False,
+                'error': 'Empty file content',
+                'file_type': 'dxf'
+            }
+        
+        # Read DXF file with better error handling
+        import io
+        import tempfile
+        import os
+        
+        # Method 1: Try BytesIO first
+        try:
+            dxf_stream = io.BytesIO(file_content)
+            import ezdxf
+            doc = ezdxf.read(dxf_stream)
+            print("✓ Successfully read DXF via BytesIO")
+            
+        except Exception as e1:
+            print(f"BytesIO method failed: {e1}")
+            
+            # Method 2: Try temporary file
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.dxf', mode='wb') as temp_file:
+                    temp_file.write(file_content)
+                    temp_path = temp_file.name
+                
+                import ezdxf
+                doc = ezdxf.readfile(temp_path)
+                print("✓ Successfully read DXF via temporary file")
+                
+                # Clean up temp file
+                os.unlink(temp_path)
+                
+            except Exception as e2:
+                print(f"Temporary file method failed: {e2}")
+                return {
+                    'success': False, 
+                    'error': f'Cannot read DXF file. File may be corrupted. Errors: {str(e1)}, {str(e2)}',
+                    'file_type': 'dxf'
+                }
+        
+        # Now analyze the DXF document
+        msp = doc.modelspace()
+        
+        print(f"DXF Version: {doc.dxfversion}")
+        print(f"Total entities: {len(msp)}")
+        
+        # Get units
+        unit_code = doc.header.get('$INSUNITS', 0)
+        unit_factor = get_dxf_unit_factor(unit_code)
+        print(f"Units: {unit_code} → Factor: {unit_factor}")
+        
+        # Extract all meaningful entities
+        all_entities = []
+        for entity in msp:
+            if is_meaningful_entity(entity):
+                all_entities.append(entity)
+        
+        print(f"Meaningful entities found: {len(all_entities)}")
+        
+        if not all_entities:
+            return {
+                'success': False,
+                'error': 'No meaningful design elements found in DXF file',
+                'file_type': 'dxf'
+            }
+        
+        # Detect separate jobs using spatial clustering
+        jobs = detect_spatial_jobs(all_entities, unit_factor)
+        print(f"Spatial detection found {len(jobs)} separate jobs")
+        
+        # Return appropriate response
+        if len(jobs) > 1:
+            return {
+                'success': True,
+                'file_type': 'dxf',
+                'multiple_items': True,
+                'items': jobs,
+                'total_items': len(jobs),
+                'detection_method': 'spatial',
+                'message': f'Found {len(jobs)} separate jobs based on spatial arrangement'
+            }
+        else:
+            return {
+                'success': True,
+                'file_type': 'dxf',
+                'multiple_items': False,
+                'items': jobs,
+                'total_items': 1,
+                'detection_method': 'spatial_single',
+                'message': 'Single job detected'
+            }
+            
+    except Exception as e:
+        print(f"DXF spatial analysis error: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return {
+            'success': False, 
+            'error': f'DXF analysis failed: {str(e)}',
+            'file_type': 'dxf'
+        }
+
+def get_dxf_unit_factor(unit_code):
+    """Convert DXF unit code to millimeter factor"""
+    unit_factors = {
+        0: 1.0,    # Unitless - assume mm
+        1: 25.4,   # Inches → mm
+        2: 304.8,  # Feet → mm
+        4: 1.0,    # Millimeters
+        5: 10.0,   # Centimeters → mm  
+        6: 1000.0, # Meters → mm
+    }
+    return unit_factors.get(unit_code, 1.0)
+
+def is_meaningful_entity(entity):
+    """Check if entity should be considered for spatial analysis"""
+    entity_type = entity.dxftype()
+    
+    # Skip text-only entities for spatial grouping (they'll be included with shapes)
+    if entity_type in ['TEXT', 'MTEXT']:
+        return True
+    
+    # Include geometry entities
+    meaningful_types = ['LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'ELLIPSE', 'SPLINE', 'INSERT']
+    return entity_type in meaningful_types
+
+def detect_spatial_jobs(entities, unit_factor):
+    """Detect separate jobs by spatial clustering of entities"""
+    # Step 1: Calculate bounding boxes for all entities
+    entity_boxes = []
+    
+    for entity in entities:
+        bbox = get_entity_bounding_box(entity, unit_factor)
+        if bbox and bbox['width'] > 1 and bbox['height'] > 1:  # Ignore tiny elements
+            entity_boxes.append({
+                'entity': entity,
+                'bbox': bbox,
+                'center_x': bbox['min_x'] + bbox['width'] / 2,
+                'center_y': bbox['min_y'] + bbox['height'] / 2
+            })
+    
+    print(f"Entities with valid bounding boxes: {len(entity_boxes)}")
+    
+    if not entity_boxes:
+        return [create_default_dxf_item("Design")]
+    
+    # Step 2: Cluster entities by spatial proximity
+    clusters = spatial_cluster_entities(entity_boxes)
+    print(f"Spatial clusters found: {len(clusters)}")
+    
+    # Step 3: Analyze each cluster as a separate job
+    jobs = []
+    for i, cluster in enumerate(clusters):
+        job_name = f"Job {i + 1}"
+        job_analysis = analyze_entity_cluster(cluster, job_name, unit_factor)
+        jobs.append(job_analysis)
+        print(f"✓ Created {job_name}: {job_analysis['width_mm']}x{job_analysis['height_mm']}mm")
+    
+    return jobs
+
+def get_entity_bounding_box(entity, unit_factor):
+    """Calculate bounding box for a single entity"""
+    try:
+        entity_type = entity.dxftype()
+        points = []
+        
+        if entity_type == 'LINE':
+            if hasattr(entity.dxf, 'start') and hasattr(entity.dxf, 'end'):
+                points.extend([entity.dxf.start, entity.dxf.end])
+                
+        elif entity_type == 'LWPOLYLINE':
+            if hasattr(entity, 'vertices'):
+                points.extend([(v[0], v[1]) for v in entity.vertices()])
+                
+        elif entity_type == 'CIRCLE':
+            if hasattr(entity.dxf, 'center') and hasattr(entity.dxf, 'radius'):
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                points.extend([
+                    (center.x - radius, center.y - radius),
+                    (center.x + radius, center.y + radius)
+                ])
+                
+        elif entity_type == 'ARC':
+            if hasattr(entity.dxf, 'center') and hasattr(entity.dxf, 'radius'):
+                center = entity.dxf.center
+                radius = entity.dxf.radius
+                points.extend([
+                    (center.x - radius, center.y - radius),
+                    (center.x + radius, center.y + radius)
+                ])
+                
+        elif entity_type in ['TEXT', 'MTEXT']:
+            if hasattr(entity.dxf, 'insert'):
+                # Text entities get a small bounding box around insertion point
+                insert_point = entity.dxf.insert
+                text_size = 10  # Assume 10mm text size
+                points.extend([
+                    (insert_point.x - text_size/2, insert_point.y - text_size/2),
+                    (insert_point.x + text_size/2, insert_point.y + text_size/2)
+                ])
+                
+        elif entity_type == 'INSERT':
+            # Block references
+            if hasattr(entity.dxf, 'insert'):
+                insert_point = entity.dxf.insert
+                block_size = 20  # Assume block size
+                points.extend([
+                    (insert_point.x - block_size/2, insert_point.y - block_size/2),
+                    (insert_point.x + block_size/2, insert_point.y + block_size/2)
+                ])
+        
+        # Convert to millimeters and calculate bounding box
+        if points:
+            xs = [p[0] * unit_factor for p in points]
+            ys = [p[1] * unit_factor for p in points]
+            
+            return {
+                'min_x': min(xs),
+                'min_y': min(ys),
+                'max_x': max(xs),
+                'max_y': max(ys),
+                'width': max(xs) - min(xs),
+                'height': max(ys) - min(ys)
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error calculating bounding box for {entity.dxftype()}: {e}")
+        return None
+
+def spatial_cluster_entities(entity_boxes, cluster_threshold=50):
+    """
+    Cluster entities based on spatial proximity
+    cluster_threshold: distance in mm to consider entities part of same job
+    """
+    if not entity_boxes:
+        return []
+    
+    clusters = []
+    
+    for entity_box in entity_boxes:
+        added_to_cluster = False
+        
+        for cluster in clusters:
+            # Check if entity is close to any entity in the cluster
+            for cluster_entity in cluster:
+                distance = calculate_entity_distance(entity_box, cluster_entity)
+                if distance < cluster_threshold:
+                    cluster.append(entity_box)
+                    added_to_cluster = True
+                    break
+            if added_to_cluster:
+                break
+        
+        if not added_to_cluster:
+            # Start new cluster
+            clusters.append([entity_box])
+    
+    # Merge clusters that are close to each other
+    clusters = merge_close_clusters(clusters, cluster_threshold * 1.5)
+    
+    return clusters
+
+def calculate_entity_distance(entity1, entity2):
+    """Calculate minimum distance between two entity bounding boxes"""
+    # Simple center-to-center distance
+    dx = entity1['center_x'] - entity2['center_x']
+    dy = entity1['center_y'] - entity2['center_y']
+    return (dx**2 + dy**2)**0.5
+
+def merge_close_clusters(clusters, merge_threshold):
+    """Merge clusters that are close to each other"""
+    if len(clusters) <= 1:
+        return clusters
+    
+    merged = True
+    while merged and len(clusters) > 1:
+        merged = False
+        new_clusters = []
+        used = set()
+        
+        for i in range(len(clusters)):
+            if i in used:
+                continue
+                
+            current_cluster = clusters[i]
+            merged_this_round = False
+            
+            for j in range(i + 1, len(clusters)):
+                if j in used:
+                    continue
+                    
+                # Check if clusters should be merged
+                if should_merge_clusters(current_cluster, clusters[j], merge_threshold):
+                    current_cluster.extend(clusters[j])
+                    used.add(j)
+                    merged = True
+                    merged_this_round = True
+            
+            new_clusters.append(current_cluster)
+            used.add(i)
+        
+        # Add any unused clusters
+        for i in range(len(clusters)):
+            if i not in used:
+                new_clusters.append(clusters[i])
+        
+        clusters = new_clusters
+    
+    return clusters
+
+def should_merge_clusters(cluster1, cluster2, threshold):
+    """Check if two clusters should be merged based on bounding box proximity"""
+    # Calculate combined bounding box for each cluster
+    bbox1 = calculate_cluster_bounding_box(cluster1)
+    bbox2 = calculate_cluster_bounding_box(cluster2)
+    
+    # Check if bounding boxes overlap or are close
+    horizontal_gap = max(0, bbox1['min_x'] - bbox2['max_x'], bbox2['min_x'] - bbox1['max_x'])
+    vertical_gap = max(0, bbox1['min_y'] - bbox2['max_y'], bbox2['min_y'] - bbox1['max_y'])
+    
+    max_gap = max(horizontal_gap, vertical_gap)
+    return max_gap < threshold
+
+def calculate_cluster_bounding_box(cluster):
+    """Calculate overall bounding box for a cluster of entities"""
+    if not cluster:
+        return None
+    
+    min_x = min(entity['bbox']['min_x'] for entity in cluster)
+    min_y = min(entity['bbox']['min_y'] for entity in cluster)
+    max_x = max(entity['bbox']['max_x'] for entity in cluster)
+    max_y = max(entity['bbox']['max_y'] for entity in cluster)
+    
+    return {
+        'min_x': min_x,
+        'min_y': min_y,
+        'max_x': max_x,
+        'max_y': max_y,
+        'width': max_x - min_x,
+        'height': max_y - min_y
+    }
+
+def analyze_entity_cluster(cluster, job_name, unit_factor):
+    """Analyze a cluster of entities as a single job"""
+    try:
+        shape_count = 0
+        text_count = 0
+        all_points = []
+        
+        for entity_data in cluster:
+            entity = entity_data['entity']
+            entity_type = entity.dxftype()
+            
+            if entity_type in ['TEXT', 'MTEXT']:
+                if hasattr(entity, 'text'):
+                    text_count += len(str(entity.text))
+            else:
+                shape_count += 1
+        
+        # Use cluster bounding box for dimensions
+        cluster_bbox = calculate_cluster_bounding_box(cluster)
+        
+        if cluster_bbox:
+            width = cluster_bbox['width']
+            height = cluster_bbox['height']
+        else:
+            width = height = 100
+        
+        # Calculate complexity and time
+        complexity = calculate_spatial_complexity(shape_count, text_count, width, height)
+        cutting_time = estimate_spatial_cutting_time(shape_count, width, height)
+        
+        return {
+            'name': job_name,
+            'width_mm': round(width, 2),
+            'height_mm': round(height, 2),
+            'num_shapes': shape_count,
+            'num_letters': text_count,
+            'complexity_score': complexity,
+            'has_intricate_details': 1 if complexity >= 4 else 0,
+            'cutting_time_minutes': round(cutting_time, 1),
+            'cluster_size': len(cluster)
+        }
+        
+    except Exception as e:
+        print(f"Error analyzing entity cluster: {e}")
+        return create_default_dxf_item(job_name)
+
+def calculate_spatial_complexity(shape_count, text_count, width, height):
+    """Calculate complexity based on spatial analysis"""
+    density = (shape_count + text_count) / (width * height / 1000)  # entities per 1000mm²
+    
+    if density < 0.1:
+        return 1
+    elif density < 0.5:
+        return 2
+    elif density < 2.0:
+        return 3
+    elif density < 5.0:
+        return 4
+    else:
+        return 5
+
+def estimate_spatial_cutting_time(shape_count, width, height):
+    """Estimate cutting time for spatial job"""
+    size_factor = (width + height) * 0.02  # Time based on perimeter
+    shape_factor = shape_count * 0.8  # Time based on complexity
+    setup_time = 2  # Minutes setup
+    
+    return max(5, size_factor + shape_factor + setup_time)
+
+def create_default_dxf_item(name):
+    """Create default DXF item"""
+    return {
+        'name': name,
+        'width_mm': 100,
+        'height_mm': 100,
+        'num_shapes': 1,
+        'num_letters': 0,
+        'complexity_score': 2,
+        'has_intricate_details': 0,
+        'cutting_time_minutes': 10
+    }
+# ========================================
 # PRICING FUNCTION
 # ========================================
 
@@ -322,6 +769,65 @@ def analyze_file():
         return jsonify(analysis)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+    
+@app.route('/analyze_dxf_file', methods=['POST'])
+def analyze_dxf_file_route():
+    """Analyze uploaded DXF file"""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'})
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'})
+    
+    if not file.filename.lower().endswith('.dxf'):
+        return jsonify({'success': False, 'error': 'Only DXF files supported'})
+    
+    try:
+        file_content = file.read()
+        analysis = analyze_dxf_file(file_content)
+        return jsonify(analysis)
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
+    
+@app.route('/debug_upload', methods=['POST'])
+def debug_upload():
+    """Debug route to check file upload issues"""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'})
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'})
+    
+    debug_info = {
+        'filename': file.filename,
+        'content_type': file.content_type,
+        'content_length': 0,
+        'file_type': 'unknown'
+    }
+    
+    try:
+        file_content = file.read()
+        debug_info['content_length'] = len(file_content)
+        debug_info['file_type'] = 'dxf' if file.filename.lower().endswith('.dxf') else 'svg'
+        debug_info['content_type_received'] = type(file_content).__name__
+        
+        # Check first few bytes for DXF signature
+        if len(file_content) > 10:
+            debug_info['first_10_bytes'] = file_content[:10].hex()
+            debug_info['first_20_chars'] = file_content[:20].decode('utf-8', errors='ignore')
+        
+        return jsonify({'success': True, 'debug_info': debug_info})
+        
+    except Exception as e:
+        debug_info['error'] = str(e)
+        return jsonify({'success': False, 'debug_info': debug_info})
 
 @app.route('/calculate_price', methods=['POST'])
 def calculate_price():
@@ -755,6 +1261,8 @@ def save_bulk_quote():
             'error': str(e),
             'traceback': traceback.format_exc()
         })
+
+
 
 # ========================================
 # RUN APPLICATION
