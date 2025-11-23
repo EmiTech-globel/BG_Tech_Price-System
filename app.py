@@ -18,10 +18,17 @@ import math
 
 app = Flask(__name__)
 
-# Database configuration
+# Database configuration - Production ready
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "instance", "quotes.db")}'
+instance_path = os.path.join(basedir, "instance")
+
+# Ensure instance directory exists
+os.makedirs(instance_path, exist_ok=True)
+os.makedirs(os.path.join(basedir, 'data'), exist_ok=True)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(instance_path, "quotes.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 db = SQLAlchemy(app)
 
 # ========================================
@@ -130,17 +137,17 @@ class QuoteItem(db.Model):
 # LOAD TRAINED MODEL
 # ========================================
 
-MODEL_PATH = 'data/cnc_laser_pricing_model.pkl'
-CSV_PATH = 'data/cnc_historical_jobs.csv'
+MODEL_PATH = os.path.join(basedir, 'data', 'cnc_laser_pricing_model.pkl')
+CSV_PATH = os.path.join(basedir, 'data', 'cnc_historical_jobs.csv')
 
 try:
     with open(MODEL_PATH, 'rb') as f:
         saved_data = pickle.load(f)
         model = saved_data['model']
         columns = saved_data['columns']
-    print("✅ Model loaded successfully!")
+    print("Model loaded successfully!")
 except Exception as e:
-    print(f"❌ Error loading model: {e}")
+    print(f"Error loading model: {e}")
     model = None
     columns = None
 
@@ -1262,19 +1269,39 @@ def save_bulk_quote():
             'traceback': traceback.format_exc()
         })
 
+# ========================================
+# APPLICATION INITIALIZATION
+# ========================================
 
+def init_app():
+    """Initialize application - create database and ensure data directories"""
+    with app.app_context():
+        # Create all database tables
+        db.create_all()
+        print("✅ Database tables created")
+        
+        # Ensure data directory exists
+        os.makedirs(os.path.join(basedir, 'data'), exist_ok=True)
+        
+        # Create empty CSV if it doesn't exist
+        if not os.path.exists(CSV_PATH):
+            df = pd.DataFrame(columns=[
+                'material', 'thickness_mm', 'num_letters', 'num_shapes',
+                'complexity_score', 'has_intricate_details', 'width_mm',
+                'height_mm', 'cutting_type', 'cutting_time_minutes',
+                'quantity', 'rush_job', 'price'
+            ])
+            df.to_csv(CSV_PATH, index=False)
+            print("✅ Created empty training CSV")
 
 # ========================================
 # RUN APPLICATION
 # ========================================
 
 if __name__ == '__main__':
-    # Ensure required directories exist
-    os.makedirs('data', exist_ok=True)
-    os.makedirs('instance', exist_ok=True)
-    
-    # Create database tables
-    with app.app_context():
-        db.create_all()
-
+    # Local development
+    init_app()
     app.run(debug=True, host='0.0.0.0', port=5000)
+else:
+    # Production - run init when imported by gunicorn
+    init_app()

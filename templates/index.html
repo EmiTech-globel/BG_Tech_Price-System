@@ -36,7 +36,7 @@
             <!-- UPLOAD TAB -->
             <div id="upload" class="tab-content active">
                 <div class="info-box">
-                    <strong>📋 How it works:</strong> Upload your SVG file and we'll automatically extract dimensions, shapes, and complexity. You just need to specify material and thickness!
+                    <strong>📋 How it works:</strong> Upload your DXF or SVG file and we'll automatically extract dimensions, shapes, and complexity. You just need to specify material and thickness!
                 </div>
                 
                 <div class="upload-area" id="uploadArea">
@@ -255,25 +255,29 @@
         </div>
         
         <!-- BULK ORDER TAB -->
-            <div id="bulk" class="tab-content content">
-                <div class="info-box">
-                    <strong>📦 Bulk Order:</strong> Add multiple items to a single quote. Perfect for customers ordering several different pieces!
-                </div>
-                
-                <!-- Current Items List -->
-                <div id="bulkItemsList" style="margin-bottom: 30px;">
-                    <h3 style="margin-bottom: 15px;">Items in Current Order (<span id="itemCount">0</span>)</h3>
-                    <div id="itemsContainer" style="min-height: 50px;">
-                        <p style="text-align: center; color: #999; padding: 20px;">No items added yet. Add your first item below!</p>
+    <div id="bulk" class="tab-content content">
+        <div class="info-box">
+            <strong>📦 Bulk Order:</strong> Add multiple items to a single quote or upload DXF files with multiple jobs.
+        </div>
+        
+        <!-- Current Items List -->
+        <div id="bulkItemsList" style="margin-bottom: 30px;">
+            <h3 style="margin-bottom: 15px;">Items in Current Order (<span id="itemCount">0</span>)</h3>
+            <div id="itemsContainer">
+                <div class="empty-state">No items added yet. Add your first item below or upload a multi-job DXF file!</div>
+            </div>
+            <div id="bulkTotal" style="display: none;">
+                <div style="background: #FFF8F0; padding: 25px; border-radius: 12px; margin-top: 20px; border: 2px solid #E89D3C;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="font-size: 1.3em; font-weight: bold;">Grand Total</div>
+                        <div style="font-size: 2em; font-weight: bold; color: #E89D3C;" id="grandTotal">₦0.00</div>
                     </div>
-                    <div style="background: #FFF8F0; padding: 20px; border-radius: 10px; margin-top: 20px; display: none;" id="bulkTotal">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div style="font-size: 1.3em; font-weight: bold;">Total:</div>
-                            <div style="font-size: 2em; font-weight: bold; color: #E89D3C;" id="grandTotal">₦0.00</div>
-                        </div>
-                        <button class="btn" onclick="saveBulkQuote()" style="margin-top: 20px;">💾 Save Complete Order</button>
-                    </div>
+                    <button class="btn" onclick="saveBulkQuote()" style="margin-top: 20px;">
+                        💾 Save Complete Order
+                    </button>
                 </div>
+            </div>
+        </div>
                 
                 <hr style="margin: 30px 0; border: none; border-top: 2px solid #e0e0e0;">
                 
