@@ -72,8 +72,6 @@ htmlcov/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# pyenv
-.python-version
 
 # Backup files
 *.bak
