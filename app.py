@@ -15,6 +15,14 @@ import xml.etree.ElementTree as ET
 import ezdxf
 from ezdxf.math import Vec2
 import math
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from io import BytesIO
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -262,125 +270,8 @@ def estimate_cutting_time(path_length_mm, width_mm, height_mm):
     return max(5, total_time_min)
 
 # ========================================
-# DXF FILE ANALYZER FUNCTIONS
+# DXF HELPER FUNCTIONS
 # ========================================
-
-def analyze_dxf_file(file_content):
-    """Analyze DXF file using spatial detection - Fixed bytes handling"""
-    try:
-        print(f"=== DXF Spatial Analysis Started ===")
-        print(f"File content type: {type(file_content)}")
-        print(f"File content length: {len(file_content) if file_content else 0}")
-        
-        # Ensure we have bytes (handle both string and bytes input)
-        if isinstance(file_content, str):
-            print("Converting string to bytes...")
-            file_content = file_content.encode('utf-8')
-        
-        if not file_content:
-            return {
-                'success': False,
-                'error': 'Empty file content',
-                'file_type': 'dxf'
-            }
-        
-        # Read DXF file with better error handling
-        import io
-        import tempfile
-        import os
-        
-        # Method 1: Try BytesIO first
-        try:
-            dxf_stream = io.BytesIO(file_content)
-            import ezdxf
-            doc = ezdxf.read(dxf_stream)
-            print("✓ Successfully read DXF via BytesIO")
-            
-        except Exception as e1:
-            print(f"BytesIO method failed: {e1}")
-            
-            # Method 2: Try temporary file
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.dxf', mode='wb') as temp_file:
-                    temp_file.write(file_content)
-                    temp_path = temp_file.name
-                
-                import ezdxf
-                doc = ezdxf.readfile(temp_path)
-                print("✓ Successfully read DXF via temporary file")
-                
-                # Clean up temp file
-                os.unlink(temp_path)
-                
-            except Exception as e2:
-                print(f"Temporary file method failed: {e2}")
-                return {
-                    'success': False, 
-                    'error': f'Cannot read DXF file. File may be corrupted. Errors: {str(e1)}, {str(e2)}',
-                    'file_type': 'dxf'
-                }
-        
-        # Now analyze the DXF document
-        msp = doc.modelspace()
-        
-        print(f"DXF Version: {doc.dxfversion}")
-        print(f"Total entities: {len(msp)}")
-        
-        # Get units
-        unit_code = doc.header.get('$INSUNITS', 0)
-        unit_factor = get_dxf_unit_factor(unit_code)
-        print(f"Units: {unit_code} → Factor: {unit_factor}")
-        
-        # Extract all meaningful entities
-        all_entities = []
-        for entity in msp:
-            if is_meaningful_entity(entity):
-                all_entities.append(entity)
-        
-        print(f"Meaningful entities found: {len(all_entities)}")
-        
-        if not all_entities:
-            return {
-                'success': False,
-                'error': 'No meaningful design elements found in DXF file',
-                'file_type': 'dxf'
-            }
-        
-        # Detect separate jobs using spatial clustering
-        jobs = detect_spatial_jobs(all_entities, unit_factor)
-        print(f"Spatial detection found {len(jobs)} separate jobs")
-        
-        # Return appropriate response
-        if len(jobs) > 1:
-            return {
-                'success': True,
-                'file_type': 'dxf',
-                'multiple_items': True,
-                'items': jobs,
-                'total_items': len(jobs),
-                'detection_method': 'spatial',
-                'message': f'Found {len(jobs)} separate jobs based on spatial arrangement'
-            }
-        else:
-            return {
-                'success': True,
-                'file_type': 'dxf',
-                'multiple_items': False,
-                'items': jobs,
-                'total_items': 1,
-                'detection_method': 'spatial_single',
-                'message': 'Single job detected'
-            }
-            
-    except Exception as e:
-        print(f"DXF spatial analysis error: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return {
-            'success': False, 
-            'error': f'DXF analysis failed: {str(e)}',
-            'file_type': 'dxf'
-        }
 
 def get_dxf_unit_factor(unit_code):
     """Convert DXF unit code to millimeter factor"""
@@ -404,63 +295,19 @@ def is_meaningful_entity(entity):
         'ELLIPSE', 'SPLINE', 'INSERT', 'TEXT', 'MTEXT'
     ]
     return entity_type in meaningful_types
-    """Check if entity should be considered for spatial analysis"""
-    entity_type = entity.dxftype()
-    
-    # Skip text-only entities for spatial grouping (they'll be included with shapes)
-    if entity_type in ['TEXT', 'MTEXT']:
-        return True
-    
-    # Include geometry entities
-    meaningful_types = ['LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 'ELLIPSE', 'SPLINE', 'INSERT']
-    return entity_type in meaningful_types
 
-def detect_spatial_jobs(entities, unit_factor):
-    """Detect separate jobs by spatial clustering of entities - WITH BETTER LOGGING"""
-    # Step 1: Calculate bounding boxes for all entities
-    entity_boxes = []
-    
-    print(f"\n=== Entity Type Breakdown ===")
-    entity_type_counts = {}
-    
-    for entity in entities:
-        entity_type = entity.dxftype()
-        entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
-        
-        bbox = get_entity_bounding_box(entity, unit_factor)
-        if bbox and bbox['width'] > 0.1 and bbox['height'] > 0.1:  # Even smaller threshold
-            entity_boxes.append({
-                'entity': entity,
-                'bbox': bbox,
-                'center_x': bbox['min_x'] + bbox['width'] / 2,
-                'center_y': bbox['min_y'] + bbox['height'] / 2
-            })
-    
-    # Print entity type summary
-    for etype, count in sorted(entity_type_counts.items()):
-        print(f"  {etype}: {count}")
-    
-    print(f"\nEntities with valid bounding boxes: {len(entity_boxes)}/{len(entities)}")
-    
-    if not entity_boxes:
-        return [create_default_dxf_item("Design")]
-    
-    # Step 2: Cluster entities by spatial proximity
-    clusters = spatial_cluster_entities(entity_boxes)
-    print(f"Spatial clusters found: {len(clusters)}")
-    
-    # Step 3: Analyze each cluster as a separate job
-    jobs = []
-    for i, cluster in enumerate(clusters):
-        job_name = f"Job {i + 1}" if len(clusters) > 1 else "Design"
-        print(f"\n--- Analyzing {job_name} ({len(cluster)} entities) ---")
-        job_analysis = analyze_entity_cluster(cluster, job_name, unit_factor)
-        jobs.append(job_analysis)
-        print(f"✓ {job_name}: {job_analysis['width_mm']}x{job_analysis['height_mm']}mm, "
-              f"{job_analysis['num_shapes']} shapes, {job_analysis['num_letters']} letters, "
-              f"complexity {job_analysis['complexity_score']}/5")
-    
-    return jobs
+def create_default_dxf_item(name):
+    """Create default DXF item"""
+    return {
+        'name': name,
+        'width_mm': 100,
+        'height_mm': 100,
+        'num_shapes': 1,
+        'num_letters': 0,
+        'complexity_score': 2,
+        'has_intricate_details': 0,
+        'cutting_time_minutes': 10
+    }
 
 def get_entity_bounding_box(entity, unit_factor):
     """Calculate bounding box - IMPROVED TEXT DETECTION"""
@@ -586,39 +433,25 @@ def get_entity_bounding_box(entity, unit_factor):
     except Exception as e:
         print(f"Error calculating bbox for {entity.dxftype()}: {e}")
         return None
+
+def calculate_cluster_bounding_box(cluster):
+    """Calculate overall bounding box for a cluster of entities"""
+    if not cluster:
+        return None
     
-def spatial_cluster_entities(entity_boxes, cluster_threshold=50):
-    """
-    Cluster entities based on spatial proximity
-    cluster_threshold: distance in mm to consider entities part of same job
-    """
-    if not entity_boxes:
-        return []
+    min_x = min(entity['bbox']['min_x'] for entity in cluster)
+    min_y = min(entity['bbox']['min_y'] for entity in cluster)
+    max_x = max(entity['bbox']['max_x'] for entity in cluster)
+    max_y = max(entity['bbox']['max_y'] for entity in cluster)
     
-    clusters = []
-    
-    for entity_box in entity_boxes:
-        added_to_cluster = False
-        
-        for cluster in clusters:
-            # Check if entity is close to any entity in the cluster
-            for cluster_entity in cluster:
-                distance = calculate_entity_distance(entity_box, cluster_entity)
-                if distance < cluster_threshold:
-                    cluster.append(entity_box)
-                    added_to_cluster = True
-                    break
-            if added_to_cluster:
-                break
-        
-        if not added_to_cluster:
-            # Start new cluster
-            clusters.append([entity_box])
-    
-    # Merge clusters that are close to each other
-    clusters = merge_close_clusters(clusters, cluster_threshold * 1.5)
-    
-    return clusters
+    return {
+        'min_x': min_x,
+        'min_y': min_y,
+        'max_x': max_x,
+        'max_y': max_y,
+        'width': max_x - min_x,
+        'height': max_y - min_y
+    }
 
 def calculate_entity_distance(entity1, entity2):
     """Calculate minimum distance between two entity bounding boxes"""
@@ -626,6 +459,19 @@ def calculate_entity_distance(entity1, entity2):
     dx = entity1['center_x'] - entity2['center_x']
     dy = entity1['center_y'] - entity2['center_y']
     return (dx**2 + dy**2)**0.5
+
+def should_merge_clusters(cluster1, cluster2, threshold):
+    """Check if two clusters should be merged based on bounding box proximity"""
+    # Calculate combined bounding box for each cluster
+    bbox1 = calculate_cluster_bounding_box(cluster1)
+    bbox2 = calculate_cluster_bounding_box(cluster2)
+    
+    # Check if bounding boxes overlap or are close
+    horizontal_gap = max(0, bbox1['min_x'] - bbox2['max_x'], bbox2['min_x'] - bbox1['max_x'])
+    vertical_gap = max(0, bbox1['min_y'] - bbox2['max_y'], bbox2['min_y'] - bbox1['max_y'])
+    
+    max_gap = max(horizontal_gap, vertical_gap)
+    return max_gap < threshold
 
 def merge_close_clusters(clusters, merge_threshold):
     """Merge clusters that are close to each other"""
@@ -668,37 +514,122 @@ def merge_close_clusters(clusters, merge_threshold):
     
     return clusters
 
-def should_merge_clusters(cluster1, cluster2, threshold):
-    """Check if two clusters should be merged based on bounding box proximity"""
-    # Calculate combined bounding box for each cluster
-    bbox1 = calculate_cluster_bounding_box(cluster1)
-    bbox2 = calculate_cluster_bounding_box(cluster2)
+def spatial_cluster_entities(entity_boxes, cluster_threshold=50):
+    """
+    Cluster entities based on spatial proximity
+    cluster_threshold: distance in mm to consider entities part of same job
+    """
+    if not entity_boxes:
+        return []
     
-    # Check if bounding boxes overlap or are close
-    horizontal_gap = max(0, bbox1['min_x'] - bbox2['max_x'], bbox2['min_x'] - bbox1['max_x'])
-    vertical_gap = max(0, bbox1['min_y'] - bbox2['max_y'], bbox2['min_y'] - bbox1['max_y'])
+    clusters = []
     
-    max_gap = max(horizontal_gap, vertical_gap)
-    return max_gap < threshold
+    for entity_box in entity_boxes:
+        added_to_cluster = False
+        
+        for cluster in clusters:
+            # Check if entity is close to any entity in the cluster
+            for cluster_entity in cluster:
+                distance = calculate_entity_distance(entity_box, cluster_entity)
+                if distance < cluster_threshold:
+                    cluster.append(entity_box)
+                    added_to_cluster = True
+                    break
+            if added_to_cluster:
+                break
+        
+        if not added_to_cluster:
+            # Start new cluster
+            clusters.append([entity_box])
+    
+    # Merge clusters that are close to each other
+    clusters = merge_close_clusters(clusters, cluster_threshold * 1.5)
+    
+    return clusters
 
-def calculate_cluster_bounding_box(cluster):
-    """Calculate overall bounding box for a cluster of entities"""
-    if not cluster:
-        return None
+def count_connected_line_groups(line_segments, tolerance=0.1):
+    """
+    Group connected line segments into shapes.
+    Lines that share endpoints are considered part of the same shape.
+    """
+    if not line_segments:
+        return 0
     
-    min_x = min(entity['bbox']['min_x'] for entity in cluster)
-    min_y = min(entity['bbox']['min_y'] for entity in cluster)
-    max_x = max(entity['bbox']['max_x'] for entity in cluster)
-    max_y = max(entity['bbox']['max_y'] for entity in cluster)
+    # Simple approach: assume every 4-6 connected lines form a shape (rectangle/polygon)
+    # For more accuracy, we'd need to trace connections
     
-    return {
-        'min_x': min_x,
-        'min_y': min_y,
-        'max_x': max_x,
-        'max_y': max_y,
-        'width': max_x - min_x,
-        'height': max_y - min_y
-    }
+    # Conservative estimate: divide total lines by average lines per shape
+    num_lines = len(line_segments)
+    
+    # Most shapes use 3-6 lines (triangles to hexagons, curved shapes broken into segments)
+    avg_lines_per_shape = 5
+    
+    estimated_shapes = max(1, num_lines // avg_lines_per_shape)
+    
+    print(f"  {num_lines} line segments grouped into ~{estimated_shapes} shapes")
+    
+    return estimated_shapes
+
+def calculate_improved_complexity(shape_count, text_count, width, height):
+    """
+    Calculate complexity with better logic
+    """
+    # Avoid division by zero
+    area = max(width * height, 1)
+    
+    # Calculate density (entities per 10,000mm²)
+    density = (shape_count + text_count/10) / (area / 10000)
+    
+    # Total cutting elements (text counts less toward complexity)
+    total_elements = shape_count + (text_count / 10)
+    
+    print(f"  Complexity calc: {total_elements:.1f} elements, density: {density:.3f}")
+    
+    # Updated thresholds based on real-world expectations
+    if total_elements <= 5 and density < 0.5:
+        complexity = 1  # Very simple: 1-5 basic shapes
+    elif total_elements <= 12 and density < 1.0:
+        complexity = 2  # Simple: 6-12 shapes with minimal text
+    elif total_elements <= 25 and density < 2.0:
+        complexity = 3  # Moderate: 13-25 elements, balanced design
+    elif total_elements <= 50 and density < 4.0:
+        complexity = 4  # Complex: 26-50 elements, detailed design
+    else:
+        complexity = 5  # Very complex: 50+ elements, intricate design
+    
+    print(f"  → Complexity score: {complexity}/5")
+    
+    return complexity
+
+def estimate_improved_cutting_time(shape_count, text_count, width, height):
+    """
+    Estimate cutting time with realiable parameters
+    """
+    # Base time on total cutting distance
+    perimeter = (width + height) * 2
+    
+    # Time factors (minutes)
+    setup_time = 2  # Setup and material loading
+    perimeter_time = perimeter * 0.008  # ~0.5 minutes per 100mm perimeter
+    shape_time = shape_count * 0.8  # ~48 seconds per shape
+    text_time = text_count * 0.1  # ~6 seconds per character
+    
+    # Add complexity factor for intricate designs
+    if shape_count > 30:
+        complexity_multiplier = 1.3
+    elif shape_count > 15:
+        complexity_multiplier = 1.15
+    else:
+        complexity_multiplier = 1.0
+    
+    total_time = (setup_time + perimeter_time + shape_time + text_time) * complexity_multiplier
+    
+    # Minimum 5 minutes, maximum 120 minutes for reasonable jobs
+    final_time = max(5, min(120, total_time))
+    
+    print(f"  Time estimate: {final_time:.1f} minutes (setup: {setup_time}, cutting: {final_time-setup_time:.1f})")
+    
+    return round(final_time, 1)
 
 def analyze_entity_cluster(cluster, job_name, unit_factor):
     """Analyze a cluster of entities as a single job - HIGHLY IMPROVED VERSION"""
@@ -787,112 +718,212 @@ def analyze_entity_cluster(cluster, job_name, unit_factor):
         print(traceback.format_exc())
         return create_default_dxf_item(job_name)
 
-def count_connected_line_groups(line_segments, tolerance=0.1):
-    """
-    Group connected line segments into shapes.
-    Lines that share endpoints are considered part of the same shape.
-    """
-    if not line_segments:
-        return 0
+def detect_spatial_jobs(entities, unit_factor):
+    """Detect separate jobs by spatial clustering of entities - WITH BETTER LOGGING"""
+    # Step 1: Calculate bounding boxes for all entities
+    entity_boxes = []
     
-    # Simple approach: assume every 4-6 connected lines form a shape (rectangle/polygon)
-    # For more accuracy, we'd need to trace connections
+    print(f"\n=== Entity Type Breakdown ===")
+    entity_type_counts = {}
     
-    # Conservative estimate: divide total lines by average lines per shape
-    num_lines = len(line_segments)
+    for entity in entities:
+        entity_type = entity.dxftype()
+        entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
+        
+        bbox = get_entity_bounding_box(entity, unit_factor)
+        if bbox and bbox['width'] > 0.1 and bbox['height'] > 0.1:  # Even smaller threshold
+            entity_boxes.append({
+                'entity': entity,
+                'bbox': bbox,
+                'center_x': bbox['min_x'] + bbox['width'] / 2,
+                'center_y': bbox['min_y'] + bbox['height'] / 2
+            })
     
-    # Most shapes use 3-6 lines (triangles to hexagons, curved shapes broken into segments)
-    avg_lines_per_shape = 5
+    # Print entity type summary
+    for etype, count in sorted(entity_type_counts.items()):
+        print(f"  {etype}: {count}")
     
-    estimated_shapes = max(1, num_lines // avg_lines_per_shape)
+    print(f"\nEntities with valid bounding boxes: {len(entity_boxes)}/{len(entities)}")
     
-    print(f"  {num_lines} line segments grouped into ~{estimated_shapes} shapes")
+    if not entity_boxes:
+        return [create_default_dxf_item("Design")]
     
-    return estimated_shapes
+    # Step 2: Cluster entities by spatial proximity
+    clusters = spatial_cluster_entities(entity_boxes)
+    print(f"Spatial clusters found: {len(clusters)}")
+    
+    # Step 3: Analyze each cluster as a separate job
+    jobs = []
+    for i, cluster in enumerate(clusters):
+        job_name = f"Job {i + 1}" if len(clusters) > 1 else "Design"
+        print(f"\n--- Analyzing {job_name} ({len(cluster)} entities) ---")
+        job_analysis = analyze_entity_cluster(cluster, job_name, unit_factor)
+        jobs.append(job_analysis)
+        print(f"✓ {job_name}: {job_analysis['width_mm']}x{job_analysis['height_mm']}mm, "
+              f"{job_analysis['num_shapes']} shapes, {job_analysis['num_letters']} letters, "
+              f"complexity {job_analysis['complexity_score']}/5")
+    
+    return jobs
 
+# ========================================
+# DXF FILE ANALYZER FUNCTIONS
+# ========================================
 
-def calculate_improved_complexity(shape_count, text_count, width, height):
-    """
-    Calculate complexity with better logic
-    """
-    # Avoid division by zero
-    area = max(width * height, 1)
-    
-    # Calculate density (entities per 10,000mm²)
-    density = (shape_count + text_count/10) / (area / 10000)
-    
-    # Total cutting elements (text counts less toward complexity)
-    total_elements = shape_count + (text_count / 10)
-    
-    print(f"  Complexity calc: {total_elements:.1f} elements, density: {density:.3f}")
-    
-    # Updated thresholds based on real-world expectations
-    if total_elements <= 5 and density < 0.5:
-        complexity = 1  # Very simple: 1-5 basic shapes
-    elif total_elements <= 12 and density < 1.0:
-        complexity = 2  # Simple: 6-12 shapes with minimal text
-    elif total_elements <= 25 and density < 2.0:
-        complexity = 3  # Moderate: 13-25 elements, balanced design
-    elif total_elements <= 50 and density < 4.0:
-        complexity = 4  # Complex: 26-50 elements, detailed design
-    else:
-        complexity = 5  # Very complex: 50+ elements, intricate design
-    
-    print(f"  → Complexity score: {complexity}/5")
-    
-    return complexity
+def analyze_dxf_file(file_content):
+    """Analyze DXF file using spatial detection - Fixed bytes handling"""
+    try:
+        print(f"=== DXF Spatial Analysis Started ===")
+        print(f"File content type: {type(file_content)}")
+        print(f"File content length: {len(file_content) if file_content else 0}")
+        
+        # Ensure we have bytes (handle both string and bytes input)
+        if isinstance(file_content, str):
+            print("Converting string to bytes...")
+            file_content = file_content.encode('utf-8')
+        
+        if not file_content:
+            return {
+                'success': False,
+                'error': 'Empty file content',
+                'file_type': 'dxf'
+            }
+        
+        # Read DXF file with better error handling
+        import io
+        import tempfile
+        import os
+        
+        # Method 1: Try BytesIO first
+        try:
+            dxf_stream = io.BytesIO(file_content)
+            import ezdxf
+            doc = ezdxf.read(dxf_stream)
+            print("✓ Successfully read DXF via BytesIO")
+            
+        except Exception as e1:
+            print(f"BytesIO method failed: {e1}")
+            
+            # Method 2: Try temporary file
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.dxf', mode='wb') as temp_file:
+                    temp_file.write(file_content)
+                    temp_path = temp_file.name
+                
+                import ezdxf
+                doc = ezdxf.readfile(temp_path)
+                print("✓ Successfully read DXF via temporary file")
+                
+                # Clean up temp file
+                os.unlink(temp_path)
+                
+            except Exception as e2:
+                print(f"Temporary file method failed: {e2}")
+                return {
+                    'success': False, 
+                    'error': f'Cannot read DXF file. File may be corrupted. Errors: {str(e1)}, {str(e2)}',
+                    'file_type': 'dxf'
+                }
+        
+        # Now analyze the DXF document
+        msp = doc.modelspace()
+        
+        print(f"DXF Version: {doc.dxfversion}")
+        print(f"Total entities: {len(msp)}")
+        
+        # Get units
+        unit_code = doc.header.get('$INSUNITS', 0)
+        unit_factor = get_dxf_unit_factor(unit_code)
+        print(f"Units: {unit_code} → Factor: {unit_factor}")
+        
+        # Extract all meaningful entities
+        all_entities = []
+        for entity in msp:
+            if is_meaningful_entity(entity):
+                all_entities.append(entity)
+        
+        print(f"Meaningful entities found: {len(all_entities)}")
+        
+        if not all_entities:
+            return {
+                'success': False,
+                'error': 'No meaningful design elements found in DXF file',
+                'file_type': 'dxf'
+            }
+        
+        # Detect separate jobs using spatial clustering
+        jobs = detect_spatial_jobs(all_entities, unit_factor)
+        print(f"Spatial detection found {len(jobs)} separate jobs")
+        
+        # Return appropriate response
+        if len(jobs) > 1:
+            return {
+                'success': True,
+                'file_type': 'dxf',
+                'multiple_items': True,
+                'items': jobs,
+                'total_items': len(jobs),
+                'detection_method': 'spatial',
+                'message': f'Found {len(jobs)} separate jobs based on spatial arrangement'
+            }
+        else:
+            return {
+                'success': True,
+                'file_type': 'dxf',
+                'multiple_items': False,
+                'items': jobs,
+                'total_items': 1,
+                'detection_method': 'spatial_single',
+                'message': 'Single job detected'
+            }
+            
+    except Exception as e:
+        print(f"DXF spatial analysis error: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return {
+            'success': False, 
+            'error': f'DXF analysis failed: {str(e)}',
+            'file_type': 'dxf'
+        }
 
-
-def estimate_improved_cutting_time(shape_count, text_count, width, height):
-    """
-    Estimate cutting time with realiable parameters
-    """
-    # Base time on total cutting distance
-    perimeter = (width + height) * 2
-    
-    # Time factors (minutes)
-    setup_time = 2  # Setup and material loading
-    perimeter_time = perimeter * 0.008  # ~0.5 minutes per 100mm perimeter
-    shape_time = shape_count * 0.8  # ~48 seconds per shape
-    text_time = text_count * 0.1  # ~6 seconds per character
-    
-    # Add complexity factor for intricate designs
-    if shape_count > 30:
-        complexity_multiplier = 1.3
-    elif shape_count > 15:
-        complexity_multiplier = 1.15
-    else:
-        complexity_multiplier = 1.0
-    
-    total_time = (setup_time + perimeter_time + shape_time + text_time) * complexity_multiplier
-    
-    # Minimum 5 minutes, maximum 120 minutes for reasonable jobs
-    final_time = max(5, min(120, total_time))
-    
-    print(f"  Time estimate: {final_time:.1f} minutes (setup: {setup_time}, cutting: {final_time-setup_time:.1f})")
-    
-    return round(final_time, 1)
-
-
-
-def create_default_dxf_item(name):
-    """Create default DXF item"""
-    return {
-        'name': name,
-        'width_mm': 100,
-        'height_mm': 100,
-        'num_shapes': 1,
-        'num_letters': 0,
-        'complexity_score': 2,
-        'has_intricate_details': 0,
-        'cutting_time_minutes': 10
-    }
 # ========================================
 # PRICING FUNCTION
 # ========================================
 
+def round_price_smartly(price):
+    """
+    Round prices to neat whole numbers
+    Examples:
+    - 10,769.13 → 10,800
+    - 5,432.67 → 5,450
+    - 15,123.45 → 15,150
+    - 999.99 → 1,000
+    - 450.25 → 500
+    """
+    import math
+    
+    if price < 100:
+        # Under ₦100: round to nearest 10
+        return math.ceil(price / 10) * 10
+    
+    elif price < 1000:
+        # ₦100-999: round to nearest 50
+        return math.ceil(price / 50) * 50
+    
+    elif price < 10000:
+        # ₦1,000-9,999: round to nearest 100
+        return math.ceil(price / 100) * 100
+    
+    elif price < 100000:
+        # ₦10,000-99,999: round to nearest 500
+        return math.ceil(price / 500) * 500
+    
+    else:
+        # ₦100,000+: round to nearest 1,000
+        return math.ceil(price / 1000) * 1000
+
 def predict_price(job_data):
-    """Predict price using trained model"""
+    """Predict price using trained model - WITH SMART ROUNDING"""
     if model is None:
         return None
     
@@ -906,14 +937,18 @@ def predict_price(job_data):
                 job_df[col] = 0
         
         job_df = job_df[columns]
-        price = model.predict(job_df)[0]
+        raw_price = model.predict(job_df)[0]
         
-        return round(price, 2)
+        # Apply smart rounding
+        final_price = round_price_smartly(raw_price)
+        
+        print(f"Raw price: ₦{raw_price:,.2f} → Rounded: ₦{final_price:,.2f}")
+        
+        return final_price
         
     except Exception as e:
         print(f"Error predicting price: {e}")
         return None
-
 # ========================================
 # HELPER FUNCTIONS
 # ========================================
@@ -928,6 +963,219 @@ def clean_number(value):
         cleaned = value.replace(',', '').replace('₦', '').replace('$', '').strip()
         return cleaned if cleaned else '0'
     return str(value)
+
+# ========================================
+# PDF GENERATION FUNCTION
+# ========================================
+def generate_quote_pdf(quote):
+    """Generate PDF for a quote"""
+    buffer = BytesIO()
+    
+    # Create PDF
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+                           rightMargin=10*mm, leftMargin=10*mm,
+                           topMargin=10*mm, bottomMargin=10*mm)
+    
+    # Container for PDF elements
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#E89D3C'),
+        spaceAfter=15,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold'
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#333333'),
+        spaceAfter=10,
+        fontName='Helvetica-Bold'
+    )
+    
+    # Add logo if exists
+    logo_path = os.path.join(basedir, 'static', 'images', 'logo.png')
+    if os.path.exists(logo_path):
+        try:
+            logo = Image(logo_path, width=50*mm, height=50*mm, kind='proportional')
+            elements.append(logo)
+            elements.append(Spacer(1, 10*mm))
+        except:
+            pass
+    
+    # Title
+    elements.append(Paragraph("PRICE QUOTATION", title_style))
+    elements.append(Spacer(1, 5*mm))
+    
+    # Company name
+    company_style = ParagraphStyle(
+        'Company',
+        parent=styles['Normal'],
+        fontSize=12,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor('#9B9B9B')
+    )
+    elements.append(Paragraph("BrainGain Tech Innovation Solutions", company_style))
+    elements.append(Spacer(1, 10*mm))
+    
+    # Quote details box
+    quote_info_data = [
+        ['Quote Number:', quote.quote_number],
+        ['Date:', quote.created_at.strftime('%B %d, %Y')],
+        ['Status:', 'RUSH JOB' if quote.rush_job else 'Standard'],
+    ]
+    
+    quote_info_table = Table(quote_info_data, colWidths=[50*mm, 90*mm])
+    quote_info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F5F5F5')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#333333')),
+        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+    elements.append(quote_info_table)
+    elements.append(Spacer(1, 10*mm))
+    
+    # Customer Information
+    if quote.customer_name or quote.customer_email:
+        elements.append(Paragraph("Customer Information", heading_style))
+        
+        customer_data = []
+        if quote.customer_name:
+            customer_data.append(['Name:', quote.customer_name])
+        if quote.customer_email:
+            customer_data.append(['Email:', quote.customer_email])
+        if quote.customer_phone:
+            customer_data.append(['Phone:', quote.customer_phone])
+        
+        customer_table = Table(customer_data, colWidths=[50*mm, 90*mm])
+        customer_table.setStyle(TableStyle([
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#333333')),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(customer_table)
+        elements.append(Spacer(1, 10*mm))
+    
+    # Job Specifications
+    elements.append(Paragraph("Job Specifications", heading_style))
+    
+    spec_data = [
+        ['Material', 'Dimensions', 'Cutting Type', 'Quantity'],
+        [
+            f"{quote.material}\n({quote.thickness_mm}mm)",
+            f"{quote.width_mm} × {quote.height_mm} mm",
+            quote.cutting_type,
+            str(quote.quantity)
+        ]
+    ]
+    
+    spec_table = Table(spec_data, colWidths=[45*mm, 45*mm, 45*mm, 35*mm])
+    spec_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+    ]))
+    elements.append(spec_table)
+    elements.append(Spacer(1, 5*mm))
+    
+    # Additional Details
+    detail_data = [
+        ['Complexity:', f"{quote.complexity_score}/5"],
+        ['Shapes:', str(quote.num_shapes)],
+        ['Letters/Text:', str(quote.num_letters)],
+        ['Estimated Time:', f"{quote.cutting_time_minutes} minutes"],
+    ]
+    
+    detail_table = Table(detail_data, colWidths=[50*mm, 90*mm])
+    detail_table.setStyle(TableStyle([
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#333333')),
+        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(detail_table)
+    elements.append(Spacer(1, 10*mm))
+    
+    # Price Section
+    elements.append(Paragraph("Pricing", heading_style))
+    
+    price_data = [
+        ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
+    ]
+    
+    price_table = Table(price_data, colWidths=[120*mm, 50*mm])
+    price_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#E89D3C')),
+        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 18),
+        ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
+        ('TOPPADDING', (0, 0), (-1, -1), 15),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+    ]))
+    elements.append(price_table)
+    elements.append(Spacer(1, 10*mm))
+    
+    # Notes
+    if quote.notes:
+        elements.append(Paragraph("Additional Notes", heading_style))
+        notes_style = ParagraphStyle(
+            'Notes',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.HexColor('#666666')
+        )
+        elements.append(Paragraph(quote.notes, notes_style))
+        elements.append(Spacer(1, 10*mm))
+    
+    # Footer
+    footer_style = ParagraphStyle(
+        'Footer',
+        parent=styles['Normal'],
+        fontSize=8,
+        textColor=colors.HexColor('#999999'),
+        alignment=TA_CENTER
+    )
+    elements.append(Spacer(1, 15*mm))
+    elements.append(Paragraph("This quote is valid for 30 days from the date of issue.", footer_style))
+    elements.append(Paragraph("Generated by BrainGain Tech CNC/Laser Pricing System", footer_style))
+    
+    # Build PDF
+    doc.build(elements)
+    
+    # Get PDF data
+    pdf_data = buffer.getvalue()
+    buffer.close()
+    
+    return pdf_data
 
 # ========================================
 # FLASK ROUTES
@@ -1145,6 +1393,53 @@ def delete_quote(quote_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/get_quote/<int:quote_id>')
+def get_quote(quote_id):
+    """Get a single quote by ID"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if quote:
+            return jsonify({
+                'success': True,
+                'quote': quote.to_dict()
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Quote not found'
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+    
+@app.route('/download_quote_pdf/<int:quote_id>')
+def download_quote_pdf(quote_id):
+    """Generate and download quote as PDF"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if not quote:
+            return jsonify({'success': False, 'error': 'Quote not found'}), 404
+        
+        # Generate PDF
+        pdf_data = generate_quote_pdf(quote)
+        
+        # Create response
+        from flask import make_response
+        response = make_response(pdf_data)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename=Quote_{quote.quote_number}.pdf'
+        
+        return response
+        
+    except Exception as e:
+        import traceback
+        print(f"PDF generation error: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+    
 
 @app.route('/add_training_job', methods=['POST'])
 def add_training_job():

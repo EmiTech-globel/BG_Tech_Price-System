@@ -416,6 +416,7 @@ async function loadQuotes() {
     }
 }
 
+
 function createQuoteCard(quote) {
     const rushBadge = quote.rush_job ? '<span style="background: #ff6b6b; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">⚡ RUSH</span>' : '';
     
@@ -448,11 +449,26 @@ function createQuoteCard(quote) {
             
             ${quote.notes ? `<div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 5px;"><strong>Notes:</strong> ${quote.notes}</div>` : ''}
             
-            <div style="margin-top: 15px; text-align: right;">
-                <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">🗑️ Delete</button>
+            <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
+                    Download PDF
+                </button>
+                <button onclick="shareQuoteOnWhatsApp(${quote.id})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
+                    Share WhatsApp
+                </button>
+                <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">
+                    Delete
+                </button>
             </div>
         </div>
     `;
+}
+
+function downloadQuotePDF(quoteId) {
+    /**
+     * Download quote as PDF
+     */
+    window.location.href = `/download_quote_pdf/${quoteId}`;
 }
 
 async function searchQuotes() {
@@ -976,4 +992,175 @@ async function saveBulkQuote() {
     } catch (error) {
         alert('❌ Error: ' + error.message);
     }
+}
+
+function shareQuoteOnWhatsApp(quoteId) {
+    /**
+     * Share quote details on WhatsApp
+     * Works on both mobile and desktop
+     */
+    
+    // Get quote data from the DOM or fetch from server
+    fetch(`/get_quote/${quoteId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const quote = data.quote;
+                
+                // Format message
+                const message = formatQuoteForWhatsApp(quote);
+                
+                // Generate WhatsApp URL
+                const encodedMessage = encodeURIComponent(message);
+                
+                // Use WhatsApp Web on desktop, WhatsApp app on mobile
+                const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                const whatsappUrl = isMobile 
+                    ? `whatsapp://send?text=${encodedMessage}`
+                    : `https://web.whatsapp.com/send?text=${encodedMessage}`;
+                
+                // Open WhatsApp
+                window.open(whatsappUrl, '_blank');
+            } else {
+                alert('Error loading quote: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Failed to share on WhatsApp');
+        });
+}
+
+function formatQuoteForWhatsApp(quote) {
+    /**
+     * Format quote data into WhatsApp message
+     */
+    
+    const rushBadge = quote.rush_job ? '⚡ RUSH JOB' : '';
+    
+    let message = `🔷 *PRICE QUOTATION* 🔷\n`;
+    message += `_BrainGain Tech Innovation Solutions_\n\n`;
+    
+    message += `📋 *Quote:* ${quote.quote_number} ${rushBadge}\n`;
+    message += `📅 *Date:* ${quote.created_at}\n\n`;
+    
+    // Customer info
+    if (quote.customer_name) {
+        message += `👤 *Customer:* ${quote.customer_name}\n`;
+    }
+    if (quote.customer_email) {
+        message += `📧 *Email:* ${quote.customer_email}\n`;
+    }
+    if (quote.customer_phone) {
+        message += `📱 *Phone:* ${quote.customer_phone}\n`;
+    }
+    if (quote.customer_name || quote.customer_email || quote.customer_phone) {
+        message += `\n`;
+    }
+    
+    // Job specifications
+    message += `🔧 *JOB SPECIFICATIONS*\n`;
+    message += `━━━━━━━━━━━━━━━━━\n`;
+    message += `• *Material:* ${quote.material} (${quote.thickness_mm}mm)\n`;
+    message += `• *Dimensions:* ${quote.width_mm} × ${quote.height_mm} mm\n`;
+    message += `• *Cutting Type:* ${quote.cutting_type}\n`;
+    message += `• *Quantity:* ${quote.quantity}\n`;
+    message += `• *Complexity:* ${quote.complexity_score}/5\n`;
+    message += `• *Shapes:* ${quote.num_shapes}\n`;
+    message += `• *Letters:* ${quote.num_letters}\n`;
+    message += `• *Est. Time:* ${quote.cutting_time_minutes} minutes\n\n`;
+    
+    // Price
+    message += `💰 *TOTAL AMOUNT*\n`;
+    message += `━━━━━━━━━━━━━━━━━\n`;
+    message += `*₦${parseFloat(quote.quoted_price).toLocaleString('en-NG', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    })}*\n\n`;
+    
+    // Notes
+    if (quote.notes) {
+        message += `📝 *Notes:* ${quote.notes}\n\n`;
+    }
+    
+    message += `_Quote valid for 30 days_\n`;
+    message += `_Generated by BrainGain Tech Pricing System_`;
+    
+    return message;
+}
+
+function shareCurrentQuoteOnWhatsApp() {
+    /**
+     * Share the currently displayed quote (in result box)
+     */
+    
+    if (!currentJobData || !currentPrice) {
+        alert('No quote to share! Please generate a quote first.');
+        return;
+    }
+    
+    // Format current quote data
+    const quote = {
+        quote_number: 'PREVIEW',
+        created_at: new Date().toLocaleDateString('en-NG'),
+        customer_name: document.getElementById('customerName')?.value || '',
+        customer_email: document.getElementById('customerEmail')?.value || '',
+        customer_phone: document.getElementById('customerPhone')?.value || '',
+        material: currentJobData.material,
+        thickness_mm: currentJobData.thickness,
+        width_mm: currentJobData.width,
+        height_mm: currentJobData.height,
+        cutting_type: currentJobData.cuttingType,
+        quantity: currentJobData.quantity,
+        complexity_score: currentJobData.complexity,
+        num_shapes: currentJobData.shapes,
+        num_letters: currentJobData.letters,
+        cutting_time_minutes: currentJobData.time,
+        quoted_price: currentPrice,
+        rush_job: currentJobData.rush,
+        notes: document.getElementById('quoteNotes')?.value || ''
+    };
+    
+    const message = formatQuoteForWhatsApp(quote);
+    const encodedMessage = encodeURIComponent(message);
+    
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const whatsappUrl = isMobile 
+        ? `whatsapp://send?text=${encodedMessage}`
+        : `https://web.whatsapp.com/send?text=${encodedMessage}`;
+    
+    window.open(whatsappUrl, '_blank');
+}
+
+function shareQuoteToContact(quoteId, phoneNumber) {
+    /**
+     * Share quote directly to a specific WhatsApp number
+     * @param quoteId - The quote ID
+     * @param phoneNumber - Customer's phone number (with country code)
+     */
+    
+    fetch(`/get_quote/${quoteId}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                const quote = data.quote;
+                const message = formatQuoteForWhatsApp(quote);
+                const encodedMessage = encodeURIComponent(message);
+                
+                // Clean phone number (remove spaces, dashes, etc.)
+                const cleanNumber = phoneNumber.replace(/[^\d+]/g, '');
+                
+                // Generate WhatsApp URL with specific number
+                const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                const whatsappUrl = isMobile 
+                    ? `whatsapp://send?phone=${cleanNumber}&text=${encodedMessage}`
+                    : `https://web.whatsapp.com/send?phone=${cleanNumber}&text=${encodedMessage}`;
+                
+                window.open(whatsappUrl, '_blank');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Failed to share on WhatsApp');
+        });
 }

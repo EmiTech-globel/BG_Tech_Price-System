@@ -14,7 +14,9 @@
 
 ## Architecture & Data Flow
 
-### 1. **SVG File Analysis Pipeline**
+### 1. **File Analysis Pipeline (SVG & DXF)**
+
+#### SVG Analysis
 When users upload SVG files, the system extracts job parameters automatically:
 - Parse SVG XML to extract width/height, count geometric shapes (paths, circles, rects, polygons, lines)
 - Count text elements for letter estimation
@@ -24,22 +26,46 @@ When users upload SVG files, the system extracts job parameters automatically:
 
 **Key functions**: `analyze_svg_file()`, `extract_svg_dimensions()`, `calculate_complexity_from_shapes()`, `estimate_cutting_time()`
 
+#### DXF Analysis (NEW)
+Advanced spatial clustering for complex CAD designs:
+- Read DXF files using ezdxf library with dual fallback (BytesIO → temporary file)
+- Extract unit conversion factor from DXF header (`$INSUNITS`: 0=unitless, 1=inches, 4=mm, 6=meters, etc.)
+- Detect meaningful entities (LINE, LWPOLYLINE, CIRCLE, ARC, TEXT, MTEXT, etc.)
+- **Spatial clustering**: Groups entities into separate jobs based on proximity (50mm threshold)
+- Analyze each cluster independently for dimensions, shape count, text content, complexity
+- Returns either single job or multi-item array for bulk quote processing
+
+**Key functions**: `analyze_dxf_file()`, `detect_spatial_jobs()`, `get_entity_bounding_box()`, `spatial_cluster_entities()`, `analyze_entity_cluster()`
+
+**Critical**: DXF helper functions MUST be defined before `analyze_dxf_file()` is called (order matters in app.py)
+
 ### 2. **Pricing Engine**
 Price prediction flow:
 1. Collect job parameters: material, thickness, dimensions, complexity, cutting type, quantity, rush job flag
 2. Create DataFrame and apply one-hot encoding for categorical columns (material, cutting_type)
 3. Align features with model's expected columns (from saved pickle metadata)
 4. Predict using RandomForest: outputs single float price in Naira (₦)
+5. **Smart rounding** via `round_price_smartly()`: <₦100→10s, <₦1k→50s, <₦10k→100s, <₦100k→500s, else 1000s
 
 **Critical**: Model features must match exactly—missing columns are filled with 0. See `predict_price()` and `sendPriceRequest()` in `script.js`.
 
-### 3. **Quote Management**
+### 3. **PDF Generation & Quote Download (NEW)**
+Quote documents generated on-demand as professional PDFs:
+- Uses ReportLab (reportlab>=4.0.7) for creation
+- Includes: quote number, date, customer info, job specs, complexity, price with Naira formatting
+- Generated PDF stored in BytesIO buffer (in-memory, no disk writes)
+- Route `/download_quote_pdf/<quote_id>` returns PDF with attachment headers
+- Function: `generate_quote_pdf(quote)` returns bytes, integrated with `/download_quote_pdf` route
+
+**Dependencies**: reportlab.lib (colors, units, pagesizes), reportlab.platypus (tables, styles)
+
+### 4. **Quote Management**
 Two database models handle single and bulk quotes:
 - `Quote`: Main quote record with aggregated job data + customer info
 - `QuoteItem`: Individual items for bulk orders, linked to Quote via foreign key
 - Quote numbering: `Q{YYYYMMDD}{###}` format (e.g., Q20231115001) generated daily
 
-### 4. **Model Retraining**
+### 5. **Model Retraining**
 Training workflow (restricted):
 - Load historical jobs from CSV, clean numeric columns, drop null rows
 - Encode categorical features, split 80/20 train/test
@@ -77,9 +103,14 @@ python app.py
 - Inspect `predict_price()` error handling—likely feature mismatch or missing model
 - Ensure all job data fields are populated in request
 
-**SVG analysis fails**:
-- Verify XML is valid UTF-8
-- Check for namespace issues in SVG (handle both namespaced `svg:` and non-namespaced elements)
+**SVG/DXF analysis fails**:
+- **SVG**: Verify XML is valid UTF-8; check for namespace issues (handle both `svg:` and non-namespaced elements)
+- **DXF**: DXF helper functions must be defined BEFORE `analyze_dxf_file()` call; check ezdxf library is installed
+
+**PDF generation errors**:
+- Verify `reportlab>=4.0.7` is installed
+- Check logo path exists: `static/images/logo.png` (gracefully skipped if missing)
+- BytesIO buffer management: ensure PDF is properly closed before sending
 
 ---
 
@@ -129,8 +160,11 @@ python app.py
 - **SQLAlchemy**: ORM for quote persistence
 - **Pandas**: CSV I/O, data encoding for model
 - **scikit-learn**: RandomForest model, train/test split, metrics (MAE, R²)
+- **ezdxf**: DXF file reading with spatial entity analysis
+- **ReportLab 4.0.7**: PDF generation for quote documents (tables, styles, images)
 - **XML parsing**: `xml.etree.ElementTree` for SVG analysis (no external SVG library)
 - **Frontend**: Vanilla JavaScript (no jQuery/React), CSS Grid for layouts
+- **File handling**: `io.BytesIO` for in-memory DXF/PDF processing, `tempfile` as DXF fallback
 
 ---
 
