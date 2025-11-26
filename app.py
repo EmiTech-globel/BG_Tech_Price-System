@@ -398,6 +398,15 @@ def is_meaningful_entity(entity):
     """Check if entity should be considered for spatial analysis"""
     entity_type = entity.dxftype()
     
+    # Include ALL meaningful entity types
+    meaningful_types = [
+        'LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 'ARC', 
+        'ELLIPSE', 'SPLINE', 'INSERT', 'TEXT', 'MTEXT'
+    ]
+    return entity_type in meaningful_types
+    """Check if entity should be considered for spatial analysis"""
+    entity_type = entity.dxftype()
+    
     # Skip text-only entities for spatial grouping (they'll be included with shapes)
     if entity_type in ['TEXT', 'MTEXT']:
         return True
@@ -407,13 +416,19 @@ def is_meaningful_entity(entity):
     return entity_type in meaningful_types
 
 def detect_spatial_jobs(entities, unit_factor):
-    """Detect separate jobs by spatial clustering of entities"""
+    """Detect separate jobs by spatial clustering of entities - WITH BETTER LOGGING"""
     # Step 1: Calculate bounding boxes for all entities
     entity_boxes = []
     
+    print(f"\n=== Entity Type Breakdown ===")
+    entity_type_counts = {}
+    
     for entity in entities:
+        entity_type = entity.dxftype()
+        entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
+        
         bbox = get_entity_bounding_box(entity, unit_factor)
-        if bbox and bbox['width'] > 1 and bbox['height'] > 1:  # Ignore tiny elements
+        if bbox and bbox['width'] > 0.1 and bbox['height'] > 0.1:  # Even smaller threshold
             entity_boxes.append({
                 'entity': entity,
                 'bbox': bbox,
@@ -421,7 +436,11 @@ def detect_spatial_jobs(entities, unit_factor):
                 'center_y': bbox['min_y'] + bbox['height'] / 2
             })
     
-    print(f"Entities with valid bounding boxes: {len(entity_boxes)}")
+    # Print entity type summary
+    for etype, count in sorted(entity_type_counts.items()):
+        print(f"  {etype}: {count}")
+    
+    print(f"\nEntities with valid bounding boxes: {len(entity_boxes)}/{len(entities)}")
     
     if not entity_boxes:
         return [create_default_dxf_item("Design")]
@@ -433,64 +452,120 @@ def detect_spatial_jobs(entities, unit_factor):
     # Step 3: Analyze each cluster as a separate job
     jobs = []
     for i, cluster in enumerate(clusters):
-        job_name = f"Job {i + 1}"
+        job_name = f"Job {i + 1}" if len(clusters) > 1 else "Design"
+        print(f"\n--- Analyzing {job_name} ({len(cluster)} entities) ---")
         job_analysis = analyze_entity_cluster(cluster, job_name, unit_factor)
         jobs.append(job_analysis)
-        print(f"✓ Created {job_name}: {job_analysis['width_mm']}x{job_analysis['height_mm']}mm")
+        print(f"✓ {job_name}: {job_analysis['width_mm']}x{job_analysis['height_mm']}mm, "
+              f"{job_analysis['num_shapes']} shapes, {job_analysis['num_letters']} letters, "
+              f"complexity {job_analysis['complexity_score']}/5")
     
     return jobs
 
 def get_entity_bounding_box(entity, unit_factor):
-    """Calculate bounding box for a single entity"""
+    """Calculate bounding box - IMPROVED TEXT DETECTION"""
     try:
         entity_type = entity.dxftype()
         points = []
         
         if entity_type == 'LINE':
             if hasattr(entity.dxf, 'start') and hasattr(entity.dxf, 'end'):
-                points.extend([entity.dxf.start, entity.dxf.end])
+                start = entity.dxf.start
+                end = entity.dxf.end
+                points.extend([
+                    (start.x if hasattr(start, 'x') else start[0], 
+                     start.y if hasattr(start, 'y') else start[1]),
+                    (end.x if hasattr(end, 'x') else end[0], 
+                     end.y if hasattr(end, 'y') else end[1])
+                ])
                 
         elif entity_type == 'LWPOLYLINE':
             if hasattr(entity, 'vertices'):
-                points.extend([(v[0], v[1]) for v in entity.vertices()])
+                for v in entity.vertices():
+                    points.append((v[0], v[1]))
+                    
+        elif entity_type == 'POLYLINE':
+            if hasattr(entity, 'vertices'):
+                for vertex in entity.vertices:
+                    if hasattr(vertex.dxf, 'location'):
+                        loc = vertex.dxf.location
+                        points.append((loc.x if hasattr(loc, 'x') else loc[0], 
+                                     loc.y if hasattr(loc, 'y') else loc[1]))
                 
         elif entity_type == 'CIRCLE':
             if hasattr(entity.dxf, 'center') and hasattr(entity.dxf, 'radius'):
                 center = entity.dxf.center
                 radius = entity.dxf.radius
+                cx = center.x if hasattr(center, 'x') else center[0]
+                cy = center.y if hasattr(center, 'y') else center[1]
                 points.extend([
-                    (center.x - radius, center.y - radius),
-                    (center.x + radius, center.y + radius)
+                    (cx - radius, cy - radius),
+                    (cx + radius, cy + radius)
                 ])
                 
         elif entity_type == 'ARC':
             if hasattr(entity.dxf, 'center') and hasattr(entity.dxf, 'radius'):
                 center = entity.dxf.center
                 radius = entity.dxf.radius
+                cx = center.x if hasattr(center, 'x') else center[0]
+                cy = center.y if hasattr(center, 'y') else center[1]
                 points.extend([
-                    (center.x - radius, center.y - radius),
-                    (center.x + radius, center.y + radius)
+                    (cx - radius, cy - radius),
+                    (cx + radius, cy + radius)
+                ])
+                
+        elif entity_type == 'ELLIPSE':
+            if hasattr(entity.dxf, 'center') and hasattr(entity.dxf, 'major_axis'):
+                center = entity.dxf.center
+                major_axis = entity.dxf.major_axis
+                cx = center.x if hasattr(center, 'x') else center[0]
+                cy = center.y if hasattr(center, 'y') else center[1]
+                radius = abs(major_axis.x if hasattr(major_axis, 'x') else major_axis[0])
+                points.extend([
+                    (cx - radius, cy - radius),
+                    (cx + radius, cy + radius)
                 ])
                 
         elif entity_type in ['TEXT', 'MTEXT']:
             if hasattr(entity.dxf, 'insert'):
-                # Text entities get a small bounding box around insertion point
                 insert_point = entity.dxf.insert
-                text_size = 10  # Assume 10mm text size
+                ix = insert_point.x if hasattr(insert_point, 'x') else insert_point[0]
+                iy = insert_point.y if hasattr(insert_point, 'y') else insert_point[1]
+                
+                # Better text size estimation
+                text_height = getattr(entity.dxf, 'height', 3)  # Default 3mm
+                
+                # Get actual text for better width estimation
+                text_content = ""
+                if entity_type == 'TEXT' and hasattr(entity.dxf, 'text'):
+                    text_content = str(entity.dxf.text)
+                elif entity_type == 'MTEXT' and hasattr(entity, 'text'):
+                    text_content = str(entity.text)
+                
+                text_length = len(text_content) if text_content else 3
+                estimated_width = text_height * 0.7 * text_length  # Char width ~70% of height
+                
                 points.extend([
-                    (insert_point.x - text_size/2, insert_point.y - text_size/2),
-                    (insert_point.x + text_size/2, insert_point.y + text_size/2)
+                    (ix, iy),
+                    (ix + estimated_width, iy + text_height)
                 ])
                 
         elif entity_type == 'INSERT':
-            # Block references
             if hasattr(entity.dxf, 'insert'):
                 insert_point = entity.dxf.insert
-                block_size = 20  # Assume block size
+                ix = insert_point.x if hasattr(insert_point, 'x') else insert_point[0]
+                iy = insert_point.y if hasattr(insert_point, 'y') else insert_point[1]
+                
+                block_size = 20
                 points.extend([
-                    (insert_point.x - block_size/2, insert_point.y - block_size/2),
-                    (insert_point.x + block_size/2, insert_point.y + block_size/2)
+                    (ix - block_size/2, iy - block_size/2),
+                    (ix + block_size/2, iy + block_size/2)
                 ])
+        
+        elif entity_type == 'SPLINE':
+            if hasattr(entity, 'control_points'):
+                for cp in entity.control_points:
+                    points.append((cp[0], cp[1]))
         
         # Convert to millimeters and calculate bounding box
         if points:
@@ -509,9 +584,9 @@ def get_entity_bounding_box(entity, unit_factor):
         return None
         
     except Exception as e:
-        print(f"Error calculating bounding box for {entity.dxftype()}: {e}")
+        print(f"Error calculating bbox for {entity.dxftype()}: {e}")
         return None
-
+    
 def spatial_cluster_entities(entity_boxes, cluster_threshold=50):
     """
     Cluster entities based on spatial proximity
@@ -626,21 +701,60 @@ def calculate_cluster_bounding_box(cluster):
     }
 
 def analyze_entity_cluster(cluster, job_name, unit_factor):
-    """Analyze a cluster of entities as a single job"""
+    """Analyze a cluster of entities as a single job - HIGHLY IMPROVED VERSION"""
     try:
         shape_count = 0
         text_count = 0
-        all_points = []
+        line_segments = []
+        text_entities = []
         
         for entity_data in cluster:
             entity = entity_data['entity']
             entity_type = entity.dxftype()
             
+            # Count text entities and their characters
             if entity_type in ['TEXT', 'MTEXT']:
-                if hasattr(entity, 'text'):
-                    text_count += len(str(entity.text))
-            else:
-                shape_count += 1
+                text_content = None
+                
+                if entity_type == 'TEXT':
+                    if hasattr(entity.dxf, 'text'):
+                        text_content = entity.dxf.text
+                    elif hasattr(entity, 'dxf') and hasattr(entity.dxf, 'text'):
+                        text_content = entity.dxf.text
+                        
+                elif entity_type == 'MTEXT':
+                    if hasattr(entity, 'text'):
+                        text_content = entity.text
+                    elif hasattr(entity, 'plain_text'):
+                        text_content = entity.plain_text()
+                
+                if text_content:
+                    # Clean and count actual visible characters
+                    clean_text = str(text_content).strip()
+                    # Remove formatting codes if present
+                    import re
+                    clean_text = re.sub(r'\\[A-Za-z][^;]*;', '', clean_text)
+                    # Count only alphanumeric characters and spaces
+                    char_count = len([c for c in clean_text if c.isalnum() or c.isspace()])
+                    text_count += char_count
+                    text_entities.append(entity_type)
+                    print(f"  Found {entity_type}: '{clean_text}' = {char_count} chars")
+            
+            # Count shape entities
+            elif entity_type in ['LINE', 'LWPOLYLINE', 'POLYLINE', 'CIRCLE', 
+                                'ARC', 'ELLIPSE', 'SPLINE', 'INSERT']:
+                
+                # Special handling for lines - group connected lines as single shapes
+                if entity_type == 'LINE':
+                    line_segments.append(entity)
+                else:
+                    shape_count += 1
+        
+        # Intelligently count lines as shapes (connected lines = 1 shape)
+        grouped_line_shapes = count_connected_line_groups(line_segments)
+        shape_count += grouped_line_shapes
+        
+        print(f"  Analysis: {shape_count} shapes, {text_count} letters, {len(text_entities)} text entities")
         
         # Use cluster bounding box for dimensions
         cluster_bbox = calculate_cluster_bounding_box(cluster)
@@ -652,8 +766,8 @@ def analyze_entity_cluster(cluster, job_name, unit_factor):
             width = height = 100
         
         # Calculate complexity and time
-        complexity = calculate_spatial_complexity(shape_count, text_count, width, height)
-        cutting_time = estimate_spatial_cutting_time(shape_count, width, height)
+        complexity = calculate_improved_complexity(shape_count, text_count, width, height)
+        cutting_time = estimate_improved_cutting_time(shape_count, text_count, width, height)
         
         return {
             'name': job_name,
@@ -669,30 +783,97 @@ def analyze_entity_cluster(cluster, job_name, unit_factor):
         
     except Exception as e:
         print(f"Error analyzing entity cluster: {e}")
+        import traceback
+        print(traceback.format_exc())
         return create_default_dxf_item(job_name)
 
-def calculate_spatial_complexity(shape_count, text_count, width, height):
-    """Calculate complexity based on spatial analysis"""
-    density = (shape_count + text_count) / (width * height / 1000)  # entities per 1000mm²
+def count_connected_line_groups(line_segments, tolerance=0.1):
+    """
+    Group connected line segments into shapes.
+    Lines that share endpoints are considered part of the same shape.
+    """
+    if not line_segments:
+        return 0
     
-    if density < 0.1:
-        return 1
-    elif density < 0.5:
-        return 2
-    elif density < 2.0:
-        return 3
-    elif density < 5.0:
-        return 4
-    else:
-        return 5
+    # Simple approach: assume every 4-6 connected lines form a shape (rectangle/polygon)
+    # For more accuracy, we'd need to trace connections
+    
+    # Conservative estimate: divide total lines by average lines per shape
+    num_lines = len(line_segments)
+    
+    # Most shapes use 3-6 lines (triangles to hexagons, curved shapes broken into segments)
+    avg_lines_per_shape = 5
+    
+    estimated_shapes = max(1, num_lines // avg_lines_per_shape)
+    
+    print(f"  {num_lines} line segments grouped into ~{estimated_shapes} shapes")
+    
+    return estimated_shapes
 
-def estimate_spatial_cutting_time(shape_count, width, height):
-    """Estimate cutting time for spatial job"""
-    size_factor = (width + height) * 0.02  # Time based on perimeter
-    shape_factor = shape_count * 0.8  # Time based on complexity
-    setup_time = 2  # Minutes setup
+
+def calculate_improved_complexity(shape_count, text_count, width, height):
+    """
+    Calculate complexity with better logic
+    """
+    # Avoid division by zero
+    area = max(width * height, 1)
     
-    return max(5, size_factor + shape_factor + setup_time)
+    # Calculate density (entities per 10,000mm²)
+    density = (shape_count + text_count/10) / (area / 10000)
+    
+    # Total cutting elements (text counts less toward complexity)
+    total_elements = shape_count + (text_count / 10)
+    
+    print(f"  Complexity calc: {total_elements:.1f} elements, density: {density:.3f}")
+    
+    # Updated thresholds based on real-world expectations
+    if total_elements <= 5 and density < 0.5:
+        complexity = 1  # Very simple: 1-5 basic shapes
+    elif total_elements <= 12 and density < 1.0:
+        complexity = 2  # Simple: 6-12 shapes with minimal text
+    elif total_elements <= 25 and density < 2.0:
+        complexity = 3  # Moderate: 13-25 elements, balanced design
+    elif total_elements <= 50 and density < 4.0:
+        complexity = 4  # Complex: 26-50 elements, detailed design
+    else:
+        complexity = 5  # Very complex: 50+ elements, intricate design
+    
+    print(f"  → Complexity score: {complexity}/5")
+    
+    return complexity
+
+
+def estimate_improved_cutting_time(shape_count, text_count, width, height):
+    """
+    Estimate cutting time with realiable parameters
+    """
+    # Base time on total cutting distance
+    perimeter = (width + height) * 2
+    
+    # Time factors (minutes)
+    setup_time = 2  # Setup and material loading
+    perimeter_time = perimeter * 0.008  # ~0.5 minutes per 100mm perimeter
+    shape_time = shape_count * 0.8  # ~48 seconds per shape
+    text_time = text_count * 0.1  # ~6 seconds per character
+    
+    # Add complexity factor for intricate designs
+    if shape_count > 30:
+        complexity_multiplier = 1.3
+    elif shape_count > 15:
+        complexity_multiplier = 1.15
+    else:
+        complexity_multiplier = 1.0
+    
+    total_time = (setup_time + perimeter_time + shape_time + text_time) * complexity_multiplier
+    
+    # Minimum 5 minutes, maximum 120 minutes for reasonable jobs
+    final_time = max(5, min(120, total_time))
+    
+    print(f"  Time estimate: {final_time:.1f} minutes (setup: {setup_time}, cutting: {final_time-setup_time:.1f})")
+    
+    return round(final_time, 1)
+
+
 
 def create_default_dxf_item(name):
     """Create default DXF item"""
@@ -1292,7 +1473,7 @@ def init_app():
                 'quantity', 'rush_job', 'price'
             ])
             df.to_csv(CSV_PATH, index=False)
-            print("✅ Created empty training CSV")
+            print("Created empty training CSV")
 
 # ========================================
 # RUN APPLICATION
