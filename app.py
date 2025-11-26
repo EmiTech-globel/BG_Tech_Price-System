@@ -1122,26 +1122,106 @@ def generate_quote_pdf(quote):
     elements.append(detail_table)
     elements.append(Spacer(1, 10*mm))
     
-    # Price Section
-    elements.append(Paragraph("Pricing", heading_style))
-    
-    price_data = [
-        ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
-    ]
-    
-    price_table = Table(price_data, colWidths=[120*mm, 50*mm])
-    price_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#E89D3C')),
-        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
-        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 18),
-        ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
-        ('TOPPADDING', (0, 0), (-1, -1), 15),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
-    ]))
-    elements.append(price_table)
+    # If this quote has multiple items, render an itemized table
+    if hasattr(quote, 'items') and quote.items:
+        elements.append(Paragraph("Items", heading_style))
+
+        # Table header
+        items_table_data = [[
+            'Item', 'Material (thickness)', 'Dimensions (mm)', 'Qty', 'Unit Price', 'Subtotal'
+        ]]
+
+        # Add each item as a row
+        total_calc = 0.0
+        for item in quote.items:
+            dims = f"{item.width_mm} × {item.height_mm}"
+            unit_price = item.item_price
+            subtotal = unit_price * (item.quantity or 1)
+            total_calc += subtotal
+            items_table_data.append([
+                item.item_name or 'Item',
+                f"{item.material} ({item.thickness_mm}mm)",
+                dims,
+                str(item.quantity),
+                f"₦{unit_price:,.2f}",
+                f"₦{subtotal:,.2f}"
+            ])
+
+        # Add a totals row
+        items_table_data.append(['', '', '', '', 'TOTAL', f"₦{total_calc:,.2f}"])
+
+        items_table = Table(items_table_data, colWidths=[45*mm, 40*mm, 40*mm, 20*mm, 30*mm, 30*mm])
+        items_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('GRID', (0, 0), (-1, -2), 0.5, colors.grey),
+            ('GRID', (-2, -1), (-1, -1), 1, colors.HexColor('#E89D3C')),
+            ('SPAN', (0, -1), (3, -1)),
+            ('ALIGN', (4, -1), (5, -1), 'RIGHT'),
+            ('FONTNAME', (4, -1), (5, -1), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#FFF8F0')),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+
+        elements.append(items_table)
+        elements.append(Spacer(1, 8*mm))
+
+        # If there is any note, show beneath items
+        if quote.notes:
+            elements.append(Paragraph("Additional Notes", heading_style))
+            notes_style = ParagraphStyle(
+                'Notes',
+                parent=styles['Normal'],
+                fontSize=10,
+                textColor=colors.HexColor('#666666')
+            )
+            elements.append(Paragraph(quote.notes, notes_style))
+            elements.append(Spacer(1, 6*mm))
+
+        # Final Price box for bulk
+        elements.append(Paragraph("Pricing", heading_style))
+        price_data = [
+            ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
+        ]
+        price_table = Table(price_data, colWidths=[120*mm, 50*mm])
+        price_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#E89D3C')),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 18),
+            ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
+            ('TOPPADDING', (0, 0), (-1, -1), 15),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ]))
+        elements.append(price_table)
+
+    else:
+        # Price Section for single-item quotes
+        elements.append(Paragraph("Pricing", heading_style))
+        
+        price_data = [
+            ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
+        ]
+        
+        price_table = Table(price_data, colWidths=[120*mm, 50*mm])
+        price_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#E89D3C')),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 18),
+            ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
+            ('TOPPADDING', (0, 0), (-1, -1), 15),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ]))
+        elements.append(price_table)
     elements.append(Spacer(1, 10*mm))
     
     # Notes
@@ -1479,12 +1559,7 @@ _Generated by BrainGain Tech Pricing System_
         import traceback
         print(f"WhatsApp share error: {e}")
         print(traceback.format_exc())
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-        print(f"PDF generation error: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({'success': False, 'error': str(e)}), 500
-    
+        return jsonify({'success': False, 'error': str(e)}), 500  
 
 @app.route('/add_training_job', methods=['POST'])
 def add_training_job():
