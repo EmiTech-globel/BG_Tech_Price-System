@@ -4,6 +4,188 @@ let extractedData = null;
 let currentJobData = null;
 let currentPrice = null;
 let bulkItems = [];
+
+// ========================================
+// MODAL DIALOG FUNCTIONS
+// ========================================
+
+/**
+ * Show a beautiful modal dialog for user input (replaces prompt())
+ * @param {string} title - Modal title
+ * @param {string} message - Message to display
+ * @param {string} placeholder - Input placeholder text
+ * @param {string} defaultValue - Default input value
+ * @returns {Promise<string>} - User input or empty string if cancelled
+ */
+function showModalInput(title, message, placeholder = '', defaultValue = '') {
+    return new Promise((resolve) => {
+        // Create overlay
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        
+        // Create modal
+        const modal = document.createElement('div');
+        modal.className = 'modal-dialog';
+        modal.innerHTML = `
+            <div class="modal-header">
+                <span>${title}</span>
+                <button class="modal-close-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-message">${message}</div>
+                <input type="text" class="modal-input" placeholder="${placeholder}" value="${defaultValue}">
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary cancel-btn">Cancel</button>
+                <button class="modal-btn modal-btn-primary ok-btn">OK</button>
+            </div>
+        `;
+        
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+        
+        const inputField = modal.querySelector('.modal-input');
+        const okBtn = modal.querySelector('.ok-btn');
+        const cancelBtn = modal.querySelector('.cancel-btn');
+        const closeBtn = modal.querySelector('.modal-close-btn');
+        
+        // Focus input
+        setTimeout(() => inputField.focus(), 100);
+        
+        // Handle OK
+        const handleOK = () => {
+            resolve(inputField.value);
+            overlay.remove();
+        };
+        
+        // Handle Cancel/Close
+        const handleCancel = () => {
+            resolve('');
+            overlay.remove();
+        };
+        
+        okBtn.addEventListener('click', handleOK);
+        cancelBtn.addEventListener('click', handleCancel);
+        closeBtn.addEventListener('click', handleCancel);
+        
+        // Enter key to submit
+        inputField.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleOK();
+        });
+        
+        // Escape key to cancel
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && overlay.parentElement) handleCancel();
+        });
+    });
+}
+
+/**
+ * Show a modal with custom buttons for selection (e.g., machine type choice)
+ * @param {string} title - Modal title
+ * @param {string} message - Message to display
+ * @param {Array} buttons - Array of {label, value} objects
+ * @returns {Promise<string>} - Selected button value or empty string
+ */
+function showModalChoice(title, message, buttons = []) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-dialog';
+        
+        let buttonsHTML = '';
+        buttons.forEach((btn, idx) => {
+            const btnClass = idx === buttons.length - 1 ? 'modal-btn-primary' : 'modal-btn-secondary';
+            buttonsHTML += `<button class="modal-btn ${btnClass}" data-value="${btn.value}">${btn.label}</button>`;
+        });
+        
+        modal.innerHTML = `
+            <div class="modal-header">
+                <span>${title}</span>
+                <button class="modal-close-btn">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-message">${message}</div>
+            </div>
+            <div class="modal-footer">
+                ${buttonsHTML}
+            </div>
+        `;
+        
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+        
+        const closeBtn = modal.querySelector('.modal-close-btn');
+        const btnElements = modal.querySelectorAll('[data-value]');
+        
+        const handleClose = () => {
+            resolve('');
+            overlay.remove();
+        };
+        
+        btnElements.forEach(btn => {
+            btn.addEventListener('click', () => {
+                resolve(btn.dataset.value);
+                overlay.remove();
+            });
+        });
+        
+        closeBtn.addEventListener('click', handleClose);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && overlay.parentElement) handleClose();
+        });
+    });
+}
+
+/**
+ * Show a modal alert (info, success, error, warning)
+ * @param {string} title - Modal title
+ * @param {string} message - Message to display
+ * @param {string} type - Type: 'info', 'success', 'error', 'warning'
+ */
+function showModalAlert(title, message, type = 'info') {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    
+    const modal = document.createElement('div');
+    modal.className = 'modal-dialog';
+    
+    // Add icon based on type
+    let icon = 'ℹ️';
+    if (type === 'success') icon = '✅';
+    else if (type === 'error') icon = '❌';
+    else if (type === 'warning') icon = '⚠️';
+    
+    modal.innerHTML = `
+        <div class="modal-header">
+            <span>${icon} ${title}</span>
+            <button class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-message">${message}</div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn modal-btn-primary ok-btn">OK</button>
+        </div>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    const okBtn = modal.querySelector('.ok-btn');
+    const closeBtn = modal.querySelector('.modal-close-btn');
+    
+    const handleClose = () => overlay.remove();
+    
+    okBtn.addEventListener('click', handleClose);
+    closeBtn.addEventListener('click', handleClose);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === 'Escape') handleClose();
+    });
+}
+
 let bulkItemCounter = 0;
 
 // ========================================
@@ -125,10 +307,22 @@ async function handleFile(file) {
     }
 }
 
-function displayDxfMultiItemResults(result) {
+async function displayDxfMultiItemResults(result) {
     console.log("Displaying DXF multi-item results:", result);
     
     try {
+        // Ask user to select cutting type for all items using modal
+        const selected = await showModalChoice(
+            '🔧 Select Machine Type',
+            'Which machine type should be used for all jobs in this file?',
+            [
+                { label: 'Laser Cutting', value: '1' },
+                { label: 'CNC Router', value: '2' }
+            ]
+        );
+        
+        const selectedCutting = selected === '2' ? 'CNC Router' : 'Laser Cutting';
+        
         // Convert DXF items to bulk items format
         bulkItems = result.items.map((item, index) => ({
             id: index,
@@ -141,7 +335,7 @@ function displayDxfMultiItemResults(result) {
             shapes: item.num_shapes,
             complexity: item.complexity_score,
             details: item.has_intricate_details,
-            cuttingType: 'Laser Cutting',
+            cuttingType: selectedCutting,
             time: item.cutting_time_minutes,
             quantity: 1,
             rush: 0,
@@ -150,6 +344,7 @@ function displayDxfMultiItemResults(result) {
         
         updateBulkItemsDisplay();
         showTab('bulk');
+        showNotification(`Using ${selectedCutting} for all jobs`, 'success');
         
     } catch (error) {
         console.error("Error displaying DXF multi-items:", error);
@@ -176,12 +371,12 @@ async function calculateFromUpload() {
     const rush = document.getElementById('uploadRush').checked ? 1 : 0;
     
     if (!material || !thickness) {
-        alert('Please select material and thickness!');
+        showNotification('Please select material and thickness!', 'warning');
         return;
     }
     
     if (!extractedData) {
-        alert('Please upload a file first!');
+        showNotification('Please upload a file first!', 'warning');
         return;
     }
     
@@ -218,7 +413,7 @@ async function calculatePrice() {
     const rush = document.getElementById('rush').checked ? 1 : 0;
     
     if (!material || !thickness || !width || !height || !time) {
-        alert('Please fill in all required fields (marked with *)!');
+        showNotification('Please fill in all required fields (marked with *)!', 'warning');
         return;
     }
     
@@ -255,55 +450,10 @@ async function sendPriceRequest(jobData) {
         if (result.success) {
             displayResult(result.price, jobData);
         } else {
-            alert('Error calculating price: ' + result.error);
+            showNotification('Error calculating price: ' + result.error, 'error');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-function displayDxfMultiItemResults(result) {
-    console.log("Displaying DXF multi-item results:", result);
-    
-    try {
-        // Convert DXF items to bulk items format
-        bulkItems = result.items.map((item, index) => ({
-            id: index,
-            name: item.name,
-            material: '',
-            thickness: 0,
-            width: item.width_mm,
-            height: item.height_mm,
-            letters: item.num_letters,
-            shapes: item.num_shapes,
-            complexity: item.complexity_score,
-            details: item.has_intricate_details,
-            cuttingType: 'Laser Cutting',
-            time: item.cutting_time_minutes,
-            quantity: 1,
-            rush: 0,
-            price: 0 // Will be calculated later
-        }));
-        
-        console.log("Converted bulk items:", bulkItems);
-        
-        // Update the bulk items display
-        updateBulkItemsDisplay();
-        
-        // Switch to bulk order tab safely
-        const bulkTab = document.querySelector('.tab[onclick*="bulk"]');
-        if (bulkTab) {
-            bulkTab.click(); // Use the existing tab click handler
-        } else {
-            // Fallback: manually switch to bulk tab
-            showTab('bulk');
-        }
-        
-        console.log("Successfully displayed DXF multi-items");
-        
-    } catch (error) {
-        console.error("Error displaying DXF multi-items:", error);
-        alert('Error displaying multiple jobs. Please check console for details.');
+        showNotification('Error: ' + error.message, 'error');
     }
 }
 
@@ -344,7 +494,7 @@ function toggleCustomerForm() {
 
 async function saveCurrentQuote() {
     if (!currentJobData || !currentPrice) {
-        alert('No quote to save!');
+        showNotification('No quote to save!', 'warning');
         return;
     }
     
@@ -354,6 +504,7 @@ async function saveCurrentQuote() {
         customer_name: document.getElementById('customerName').value,
         customer_email: document.getElementById('customerEmail').value,
         customer_phone: document.getElementById('customerPhone').value,
+        customer_whatsapp: document.getElementById('customerWhatsApp').value,
         notes: document.getElementById('quoteNotes').value
     };
     
@@ -369,7 +520,7 @@ async function saveCurrentQuote() {
         const result = await response.json();
         
         if (result.success) {
-            alert('✅ ' + result.message);
+            showNotification('✅ ' + result.message, 'success');
             
             // Clear form
             document.getElementById('customerName').value = '';
@@ -384,10 +535,10 @@ async function saveCurrentQuote() {
                 loadQuotes();
             }
         } else {
-            alert('Error saving quote: ' + result.error);
+            showNotification('Error saving quote: ' + result.error, 'error');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
+        showNotification('Error: ' + error.message, 'error');
     }
 }
 
@@ -453,8 +604,8 @@ function createQuoteCard(quote) {
                 <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
                     Download PDF
                 </button>
-                <button onclick="shareQuoteOnWhatsApp(${quote.id})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
-                    Share WhatsApp
+                <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
+                    📎 Share WhatsApp
                 </button>
                 <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">
                     Delete
@@ -495,7 +646,17 @@ async function searchQuotes() {
 }
 
 async function deleteQuote(quoteId) {
-    if (!confirm('Are you sure you want to delete this quote?')) {
+    // Show confirmation modal instead of plain confirm()
+    const confirmed = await showModalChoice(
+        '🗑️ Delete Quote',
+        'Are you sure you want to delete this quote? This action cannot be undone.',
+        [
+            { label: 'Cancel', value: 'no' },
+            { label: 'Delete', value: 'yes' }
+        ]
+    );
+    
+    if (confirmed !== 'yes') {
         return;
     }
     
@@ -507,13 +668,13 @@ async function deleteQuote(quoteId) {
         const result = await response.json();
         
         if (result.success) {
-            alert('Quote deleted successfully');
+            showNotification('✅ Quote deleted successfully', 'success');
             loadQuotes();
         } else {
-            alert('Error: ' + result.error);
+            showNotification('Error: ' + result.error, 'error');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
+        showNotification('Error: ' + error.message, 'error');
     }
 }
 
@@ -539,7 +700,7 @@ async function addTrainingJob() {
     const price = document.getElementById('jobPrice').value;
     
     if (!material || !thickness || !width || !height || !time || !price) {
-        alert('Please fill in all required fields (marked with *)!');
+        showNotification('Please fill in all required fields (marked with *)!', 'warning');
         return;
     }
     
@@ -580,7 +741,7 @@ async function addTrainingJob() {
         const result = await response.json();
         
         if (result.success) {
-            alert('✅ ' + result.message);
+            showNotification('✅ ' + result.message, 'success');
             
             // Clear form
             document.getElementById('jobMaterial').value = '';
@@ -599,10 +760,10 @@ async function addTrainingJob() {
             // Update job count
             updateTrainingStats();
         } else {
-            alert('Error: ' + result.error);
+            showNotification('Error: ' + result.error, 'error');
         }
     } catch (error) {
-        alert('Error: ' + error.message);
+        showNotification('Error: ' + error.message, 'error');
     }
 }
 
@@ -638,7 +799,7 @@ async function retrainModel() {
         if (result.success) {
             statusDiv.innerHTML = `
                 <div class="success-box">
-                    <strong>✅ ${result.message}</strong>
+                    <strong>${result.message}</strong>
                     <p style="margin-top: 10px;">
                         Total Jobs: ${result.total_jobs}<br>
                         New R² Score: ${result.r2_score}<br>
@@ -950,21 +1111,66 @@ function clearBulkForm() {
 
 async function saveBulkQuote() {
     if (bulkItems.length === 0) {
-        alert('Please add at least one item to the order!');
+        showNotification('Please add at least one item to the order!', 'warning');
         return;
     }
     
-    // Ask for customer info
-    const customerName = prompt('Customer Name (optional):') || '';
-    const customerEmail = prompt('Customer Email (optional):') || '';
-    const customerPhone = prompt('Customer Phone (optional):') || '';
-    const notes = prompt('Order Notes (optional):') || '';
+    // Calculate individual price for each item if not already calculated
+    const itemsWithPrices = await Promise.all(
+        bulkItems.map(async (item) => {
+            // If item already has a price from price calculation, use it
+            if (item.price && item.price > 0) {
+                return item;
+            }
+            
+            // Otherwise calculate price for this specific item
+            try {
+                const priceResponse = await fetch('/calculate_price', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        material: item.material,
+                        thickness: item.thickness,
+                        width: item.width,
+                        height: item.height,
+                        letters: item.letters || 0,
+                        shapes: item.shapes || 1,
+                        complexity: item.complexity || 3,
+                        details: item.details || 0,
+                        cuttingType: item.cuttingType,
+                        time: item.time || 10,
+                        quantity: item.quantity || 1,
+                        rush: item.rush || 0
+                    })
+                });
+                
+                const priceData = await priceResponse.json();
+                if (priceData.success) {
+                    return { ...item, price: priceData.price };
+                }
+            } catch (error) {
+                console.error('Error calculating price for item:', error);
+            }
+            
+            return item;
+        })
+    );
+    
+    // Ask for customer info using modals
+    const customerName = await showModalInput('👤 Customer Name', 'Enter customer name (optional):', 'e.g., John Doe', '') || '';
+    const customerEmail = await showModalInput('📧 Customer Email', 'Enter customer email (optional):', 'e.g., john@example.com', '') || '';
+    const customerPhone = await showModalInput('☎️ Customer Phone', 'Enter customer phone (optional):', 'e.g., +234 803 123 4567', '') || '';
+    const customerWhatsApp = await showModalInput('📱 Customer WhatsApp', 'Enter customer WhatsApp number (optional):', 'e.g., +234XXXXXXXXXX', '') || '';
+    const notes = await showModalInput('📝 Order Notes', 'Add any special notes or instructions (optional):', 'e.g., Rush order, special requirements', '') || '';
     
     const quoteData = {
-        items: bulkItems,
+        items: itemsWithPrices,
         customer_name: customerName,
         customer_email: customerEmail,
         customer_phone: customerPhone,
+        customer_whatsapp: customerWhatsApp,
         notes: notes
     };
     
@@ -980,50 +1186,81 @@ async function saveBulkQuote() {
         const result = await response.json();
         
         if (result.success) {
-            alert(`✅ ${result.message}\n\nQuote Number: ${result.quote_number}\nTotal Items: ${result.items_count}\nTotal Price: ₦${result.total_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}`);
+            const message = `Quote Number: ${result.quote_number}\nTotal Items: ${result.items_count}\nTotal Price: ₦${result.total_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}`;
+            showModalAlert('Quote Saved Successfully!', message, 'success');
             
             // Clear bulk order
             bulkItems = [];
             bulkItemCounter = 0;
             updateBulkItemsDisplay();
         } else {
-            alert('❌ Error saving quote: ' + result.error);
+            showModalAlert('❌ Error Saving Quote', result.error, 'error');
         }
     } catch (error) {
-        alert('❌ Error: ' + error.message);
+        showNotification('Error: ' + error.message, 'error');
     }
 }
 
-function shareQuoteOnWhatsApp(quoteId) {
+async function shareQuoteOnWhatsApp(quoteId, customerData) {
     /**
-     * Share quote PDF on WhatsApp
-     * Sends PDF link via WhatsApp message
+     * Share quote PDF on WhatsApp from Saved Quotes tab
+     * If customer WhatsApp number exists, uses it; otherwise prompts for input
+     * Fallback to generic WhatsApp share if number not provided
      */
     
-    fetch(`/share_quote_whatsapp/${quoteId}`)
+    let whatsappNumber = customerData?.whatsapp_number || '';
+    
+    // If no WhatsApp number, prompt user with modal
+    if (!whatsappNumber) {
+        whatsappNumber = await showModalInput(
+            '📱 Enter WhatsApp Number',
+            'Enter the customer\'s WhatsApp number or leave blank for standard share:',
+            'e.g., +234XXXXXXXXXX',
+            ''
+        ) || '';
+    }
+    
+    const sharePayload = whatsappNumber ? 
+        { whatsapp_number: whatsappNumber } : 
+        {};
+    
+    fetch(`/share_quote_whatsapp/${quoteId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(sharePayload)
+    })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                const message = data.message;
+                let whatsappUrl;
                 
-                // Generate WhatsApp URL
-                const encodedMessage = encodeURIComponent(message);
-                
-                // Use WhatsApp Web on desktop, WhatsApp app on mobile
-                const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-                const whatsappUrl = isMobile 
-                    ? `whatsapp://send?text=${encodedMessage}`
-                    : `https://web.whatsapp.com/send?text=${encodedMessage}`;
+                if (data.has_customer_number && data.whatsapp_link) {
+                    // Direct message to customer
+                    whatsappUrl = data.whatsapp_link;
+                    showNotification('Opening WhatsApp to message customer directly...', 'success');
+                } else {
+                    // Fallback: general WhatsApp share
+                    const message = data.message;
+                    const encodedMessage = encodeURIComponent(message);
+                    
+                    // Use WhatsApp Web on desktop, WhatsApp app on mobile
+                    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                    whatsappUrl = isMobile 
+                        ? `whatsapp://send?text=${encodedMessage}`
+                        : `https://web.whatsapp.com/send?text=${encodedMessage}`;
+                }
                 
                 // Open WhatsApp
                 window.open(whatsappUrl, '_blank');
             } else {
-                alert('Error sharing on WhatsApp: ' + data.error);
+                showNotification('Error sharing on WhatsApp: ' + data.error, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('Failed to share on WhatsApp');
+            showNotification('Failed to share on WhatsApp', 'error');
         });
 }
 
@@ -1088,13 +1325,17 @@ function formatQuoteForWhatsApp(quote) {
 function shareCurrentQuoteOnWhatsApp() {
     /**
      * Share the currently displayed quote as PDF via WhatsApp
-     * First saves the quote, then generates PDF share link
+     * If customer WhatsApp number provided, sends direct message to customer
+     * Otherwise opens general WhatsApp
      */
     
     if (!currentJobData || !currentPrice) {
-        alert('No quote to share! Please generate a quote first.');
+        showNotification('No quote to share! Please generate a quote first.', 'warning');
         return;
     }
+    
+    // Get customer WhatsApp number if provided
+    const customerWhatsAppNumber = document.getElementById('customerWhatsApp')?.value?.trim() || '';
     
     // Prepare quote data
     const quoteData = {
@@ -1103,6 +1344,7 @@ function shareCurrentQuoteOnWhatsApp() {
         customer_name: document.getElementById('customerName')?.value || '',
         customer_email: document.getElementById('customerEmail')?.value || '',
         customer_phone: document.getElementById('customerPhone')?.value || '',
+        customer_whatsapp: customerWhatsAppNumber,
         notes: document.getElementById('quoteNotes')?.value || ''
     };
     
@@ -1121,41 +1363,57 @@ function shareCurrentQuoteOnWhatsApp() {
             const quoteId = result.quote_id;
             const quoteNumber = result.quote_number;
             
-            // Generate a message with PDF download link
-            const message = `
-🔷 *PRICE QUOTATION* 🔷
-_BrainGain Tech Innovation Solutions_
-
-📋 *Quote:* ${quoteNumber}
-📅 *Date:* ${new Date().toLocaleDateString('en-NG')}
-
-💰 *TOTAL AMOUNT: ₦${currentPrice.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*
-
-📎 *Download PDF Quote:*
-${window.location.origin}/download_quote_pdf/${quoteId}
-
-_Quote valid for 7 days_
-_Generated by BrainGain Tech Pricing System_
-            `.trim();
+            // Call backend to get WhatsApp share link
+            const sharePayload = customerWhatsAppNumber ? 
+                { whatsapp_number: customerWhatsAppNumber } : 
+                {};
             
-            // Generate WhatsApp URL
-            const encodedMessage = encodeURIComponent(message);
-            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-            const whatsappUrl = isMobile 
-                ? `whatsapp://send?text=${encodedMessage}`
-                : `https://web.whatsapp.com/send?text=${encodedMessage}`;
-            
-            // Open WhatsApp
-            window.open(whatsappUrl, '_blank');
-            
-            alert(`Quote saved as ${quoteNumber}!\n\nOpening WhatsApp to share PDF...`);
+            fetch(`/share_quote_whatsapp/${quoteId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(sharePayload)
+            })
+            .then(response => response.json())
+            .then(shareResult => {
+                if (shareResult.success) {
+                    let whatsappUrl;
+                    let alertMsg;
+                    
+                    if (shareResult.has_customer_number && shareResult.whatsapp_link) {
+                        // Direct message to customer
+                        whatsappUrl = shareResult.whatsapp_link;
+                        alertMsg = `Quote ${quoteNumber} saved!\n\nOpening WhatsApp to message customer directly...`;
+                    } else {
+                        // Fallback: general WhatsApp share
+                        const message = shareResult.message;
+                        const encodedMessage = encodeURIComponent(message);
+                        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                        whatsappUrl = isMobile 
+                            ? `whatsapp://send?text=${encodedMessage}`
+                            : `https://web.whatsapp.com/send?text=${encodedMessage}`;
+                        alertMsg = `Quote ${quoteNumber} saved!\n\nOpening WhatsApp to share PDF...`;
+                    }
+                    
+                    // Open WhatsApp
+                    window.open(whatsappUrl, '_blank');
+                    showNotification(alertMsg, 'success');
+                } else {
+                    showNotification('Error generating share link: ' + shareResult.error, 'error');
+                }
+            })
+            .catch(error => {
+                console.error('Error sharing:', error);
+                showNotification('Failed to generate WhatsApp share link', 'error');
+            });
         } else {
-            alert('Error saving quote: ' + result.error);
+            showNotification('Error saving quote: ' + result.error, 'error');
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        alert('Failed to save and share quote');
+        showNotification('Failed to save and share quote', 'error');
     });
 }
 
@@ -1188,6 +1446,6 @@ function shareQuoteToContact(quoteId, phoneNumber) {
         })
         .catch(error => {
             console.error('Error:', error);
-            alert('Failed to share on WhatsApp');
+            showNotification('Failed to share on WhatsApp', 'error');
         });
 }
