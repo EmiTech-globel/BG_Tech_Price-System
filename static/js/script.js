@@ -220,12 +220,14 @@ function showTab(tabName) {
     // Load data for specific tabs
     if (tabName === 'quotes') {
         loadQuotes();
+    } else if (tabName === 'inventory') {
+        loadInventory();
     } else if (tabName === 'addjob') {
         updateTrainingStats();
     }
 }
-// ========================================
 
+// ========================================
 // FILE UPLOAD AND ANALYSIS FUNCTIONS
 // ========================================
 
@@ -435,6 +437,10 @@ async function calculatePrice() {
     await sendPriceRequest(jobData);
 }
 
+// ========================================
+// UPDATED PRICE REQUEST FUNCTION
+// ========================================
+
 async function sendPriceRequest(jobData) {
     try {
         const response = await fetch('/calculate_price', {
@@ -448,7 +454,7 @@ async function sendPriceRequest(jobData) {
         const result = await response.json();
         
         if (result.success) {
-            displayResult(result.price, jobData);
+            displayResultWithInventory(result.price, jobData, result.inventory, result.warnings);
         } else {
             showNotification('Error calculating price: ' + result.error, 'error');
         }
@@ -457,18 +463,117 @@ async function sendPriceRequest(jobData) {
     }
 }
 
-function displayResult(price, jobData) {
+// ========================================
+// NEW DISPLAY FUNCTION WITH INVENTORY INFO
+// ========================================
+
+function displayResultWithInventory(price, jobData, inventory, warnings) {
     // Store current quote data
     currentJobData = jobData;
     currentPrice = price;
     
-    document.getElementById('priceDisplay').textContent = '₦' + price.toLocaleString('en-NG', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    // Display price
+    document.getElementById('priceDisplay').textContent = '₦' + price.toLocaleString('en-NG', {
+        minimumFractionDigits: 2, 
+        maximumFractionDigits: 2
+    });
+    
+    // Display basic job details
     document.getElementById('resultMaterial').textContent = jobData.material + ' (' + jobData.thickness + 'mm)';
     document.getElementById('resultSize').textContent = jobData.width + 'mm × ' + jobData.height + 'mm';
     document.getElementById('resultComplexity').textContent = jobData.complexity + '/5';
     document.getElementById('resultCutting').textContent = jobData.cuttingType;
     document.getElementById('resultQuantity').textContent = jobData.quantity;
     document.getElementById('resultTime').textContent = jobData.time + ' minutes';
+    
+    // Create or update inventory status section
+    let inventorySection = document.getElementById('inventoryStatus');
+    if (!inventorySection) {
+        inventorySection = document.createElement('div');
+        inventorySection.id = 'inventoryStatus';
+        inventorySection.style.cssText = 'margin: 20px 0; padding: 15px; border-radius: 10px;';
+        
+        const detailsDiv = document.querySelector('.details');
+        if (detailsDiv && detailsDiv.parentNode) {
+            detailsDiv.parentNode.insertBefore(inventorySection, detailsDiv.nextSibling);
+        } else {
+            // Fallback: append to result box if .details not found
+            const resultBox = document.getElementById('resultBox');
+            if (resultBox) {
+                resultBox.appendChild(inventorySection);
+            }
+        }
+    }
+    
+    // Build inventory status HTML - Initialize statusHTML first
+    let statusHTML = '';
+    
+    // Add material cost header if in stock
+    if (inventory.in_stock){
+        statusHTML += ` 
+        <div style="text-align: center; margin-bottom: 15px;">
+           <h3 style="margin-bottom: 15px; font-size: 20px;">Material Status</h3>
+           <strong style="font-size: 30px;">Material Cost: ₦${inventory.material_cost}</strong>
+        </div>
+        `;
+    }
+    
+    // Add stock status section
+    if (inventory.in_stock) {
+        statusHTML += `
+            <div style="background: rgba(76, 175, 80, 0.2); padding: 15px; border-radius: 8px; border-left: 4px solid #4CAF50;">
+                <div style="font-weight: bold; color: #2e7d32; margin-bottom: 10px;">
+                    ${inventory.message}
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+                    <div><strong>Color:</strong> ${inventory.color || 'N/A'}</div>
+                    <div><strong>Area Needed:</strong> ${inventory.area_sq_ft} sq ft</div>
+                    <div><strong>Price/sq ft:</strong> ₦${inventory.price_per_sq_ft.toLocaleString()}</div>
+                </div>
+            </div>
+        `;
+    } else {
+        statusHTML += `
+            <div style="background: rgba(244, 67, 54, 0.2); padding: 15px; border-radius: 8px; border-left: 4px solid #F44336;">
+                <div style="font-weight: bold; color: #c62828; margin-bottom: 10px;">
+                    ❌ ${inventory.message}
+                </div>
+                <div style="font-size: 0.9em; color: #d32f2f;">
+                    ${inventory.warning || 'This material needs to be added to inventory or restocked.'}
+                </div>
+            </div>
+        `;
+    }
+    
+    inventorySection.innerHTML = statusHTML;
+
+    // Display warnings if any
+    if (warnings && warnings.length > 0) {
+        let warningSection = document.getElementById('warningSection');
+        if (!warningSection) {
+            warningSection = document.createElement('div');
+            warningSection.id = 'warningSection';
+            
+            // Insert after inventory section or at the end of result box
+            if (inventorySection && inventorySection.parentNode) {
+                inventorySection.parentNode.insertBefore(warningSection, inventorySection.nextSibling);
+            } else {
+                const resultBox = document.getElementById('resultBox');
+                if (resultBox) {
+                    resultBox.appendChild(warningSection);
+                }
+            }
+        }
+        
+        warningSection.innerHTML = `
+            <div style="margin: 20px 0; padding: 15px; background: rgba(255, 152, 0, 0.2); border-left: 4px solid #FF9800; border-radius: 8px;">
+                <h4 style="margin: 0 0 10px 0; color: #e65100;">⚠️ Warnings</h4>
+                <ul style="margin: 0; padding-left: 20px;">
+                    ${warnings.map(w => `<li style="color: #e65100;">${w}</li>`).join('')}
+                </ul>
+            </div>
+        `;
+    }
     
     // Reset customer form
     document.getElementById('customerForm').style.display = 'none';
@@ -686,6 +791,8 @@ document.addEventListener('DOMContentLoaded', function() {
         originalShowTab.call(this, tabName);
         if (tabName === 'quotes') {
             loadQuotes();
+        } else if (tabName === 'inventory') {
+            loadInventory();
         }
     };
 });
@@ -834,6 +941,8 @@ document.addEventListener('DOMContentLoaded', function() {
         
         if (tabName === 'quotes') {
             loadQuotes();
+        } else if (tabName === 'inventory') {
+            loadInventory();
         } else if (tabName === 'addjob') {
             updateTrainingStats();
         }
@@ -898,11 +1007,107 @@ async function addItemToBulk() {
     }
 }
 
+// ========================================
+// UPDATED BULK ITEMS DISPLAY FUNCTION
+// ========================================
+
+// NOTE: Bulk item UI relies on these functions being async (so we can await pricing)
+// and NOT being redefined later in the file.
+
+// Update material for a bulk item (async + re-render)
+async function updateBulkItemMaterial(itemId, material) {
+    const item = bulkItems.find(i => i.id === itemId);
+    if (!item) return;
+
+    item.material = material || '';
+    // Re-render immediately so the selected values show right away
+    updateBulkItemsDisplay();
+
+    // If thickness is already selected, trigger price calc
+    if (item.material && item.thickness) {
+        await calculateBulkItemPrice(itemId);
+    }
+}
+
+// Update thickness for a bulk item (async + re-render)
+async function updateBulkItemThickness(itemId, thickness) {
+    const item = bulkItems.find(i => i.id === itemId);
+    if (!item) return;
+
+    item.thickness = thickness ? parseFloat(thickness) : 0;
+    // Re-render immediately so the selected values show right away
+    updateBulkItemsDisplay();
+
+    // If material is already selected, trigger price calc
+    if (item.material && item.thickness) {
+        await calculateBulkItemPrice(itemId);
+    }
+}
+
+// Calculate / refresh price for a single bulk item
+async function calculateBulkItemPrice(itemId) {
+    const item = bulkItems.find(i => i.id === itemId);
+    if (!item) return;
+
+    // Require both
+    if (!item.material || !item.thickness) return;
+
+    const jobData = {
+        material: item.material,
+        thickness: item.thickness,
+        letters: item.letters,
+        shapes: item.shapes,
+        complexity: item.complexity,
+        details: item.details,
+        width: item.width,
+        height: item.height,
+        cuttingType: item.cuttingType,
+        time: item.time,
+        quantity: item.quantity,
+        rush: item.rush
+    };
+
+    try {
+        const response = await fetch('/calculate_price', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(jobData)
+        });
+
+        const result = await response.json();
+
+        if (!result.success) {
+            showNotification(`Error calculating price for ${item.name}: ${result.error}`, 'error');
+            return;
+        }
+
+        item.price = result.price;
+        item.inventory = result.inventory;
+
+        updateBulkItemsDisplay();
+
+        if (result.inventory && result.inventory.in_stock === false) {
+            showNotification(`${item.name}: ${result.inventory.message}`, 'warning');
+        } else {
+            showNotification(`${item.name}: Price calculated - ₦${result.price.toLocaleString()}`, 'success');
+        }
+    } catch (error) {
+        showNotification(`Error calculating price for ${item.name}: ${error.message}`, 'error');
+    }
+}
+
+// Update your display function to pre-select material and thickness if they exist
 function updateBulkItemsDisplay() {
     const container = document.getElementById('itemsContainer');
     const countSpan = document.getElementById('itemCount');
     const totalDiv = document.getElementById('bulkTotal');
     const grandTotalSpan = document.getElementById('grandTotal');
+    
+    // If bulk tab DOM isn't present (or was replaced), fail safely
+    if (!container || !countSpan || !totalDiv) {
+        console.warn('Bulk UI elements missing. Skipping updateBulkItemsDisplay().');
+        return;
+    }
     
     countSpan.textContent = bulkItems.length;
     
@@ -913,13 +1118,34 @@ function updateBulkItemsDisplay() {
     }
     
     const grandTotal = bulkItems.reduce((sum, item) => sum + (item.price || 0), 0);
-    grandTotalSpan.textContent = '₦' + grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    const totalMaterialCost = bulkItems.reduce((sum, item) => {
+        return sum + (item.inventory?.material_cost * item.quantity || 0);
+    }, 0);
     
-    container.innerHTML = bulkItems.map((item, index) => `
+    showElement('bulkTotal');
+    // grandTotalSpan can be null if #bulkTotal content got replaced; we render totals below anyway
+    if (grandTotalSpan) {
+        grandTotalSpan.textContent = '₦' + grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    }
+    
+    container.innerHTML = bulkItems.map((item, index) => {
+        const stockBadge = item.inventory?.in_stock 
+            ? `<span style="background: #4CAF50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">✅ In Stock</span>`
+            : item.inventory 
+            ? `<span style="background: #F44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">❌ Out of Stock</span>`
+            : '';
+        
+        // Get current material and thickness values (normalize to strings for <select> matching)
+        const currentMaterial = item.material || '';
+        const currentThickness = (item.thickness !== null && item.thickness !== undefined && item.thickness !== 0)
+            ? String(item.thickness)
+            : '';
+        
+        return `
         <div class="bulk-item-card">
             <div class="bulk-item-header">
                 <div>
-                    <h4>${item.name}</h4>
+                    <h4>${item.name} ${stockBadge}</h4>
                     <small>Item #${index + 1}</small>
                 </div>
                 <div class="bulk-item-price">
@@ -928,57 +1154,70 @@ function updateBulkItemsDisplay() {
                 </div>
             </div>
             <div class="bulk-item-details">
+                <div><strong>Material:</strong> ${item.material || 'Not selected'} (${item.thickness ? item.thickness : '--'}mm)</div>
                 <div><strong>Size:</strong> ${item.width}×${item.height}mm</div>
                 <div><strong>Shapes:</strong> ${item.shapes}</div>
                 <div><strong>Letters:</strong> ${item.letters}</div>
                 <div><strong>Complexity:</strong> ${item.complexity}/5</div>
             </div>
+
             ${!item.price ? `
             <div class="material-prompt">
                 <strong>Set Material & Thickness:</strong>
                 <div class="material-selection">
                     <select onchange="updateBulkItemMaterial(${item.id}, this.value)" class="form-control-sm">
                         <option value="">Select Material</option>
-                        <option value="Acrylic">Acrylic</option>
-                        <option value="Wood">Wood</option>
-                        <option value="Metal">Metal</option>
-                        <option value="MDF">MDF</option>
-                        <option value="ACP">ACP</option>
+                        <option value="Acrylic" ${currentMaterial === 'Acrylic' ? 'selected' : ''}>Acrylic</option>
+                        <option value="Wood" ${currentMaterial === 'Wood' ? 'selected' : ''}>Wood</option>
+                        <option value="Metal" ${currentMaterial === 'Metal' ? 'selected' : ''}>Metal</option>
+                        <option value="MDF" ${currentMaterial === 'MDF' ? 'selected' : ''}>MDF</option>
+                        <option value="ACP" ${currentMaterial === 'ACP' ? 'selected' : ''}>ACP</option>
                     </select>
                     <select onchange="updateBulkItemThickness(${item.id}, this.value)" class="form-control-sm">
                         <option value="">Thickness</option>
-                        <option value="3">3mm</option>
-                        <option value="4">4mm</option>
-                        <option value="6">6mm</option>
-                        <option value="8">8mm</option>
-                        <option value="9">9mm</option>
-                        <option value="10">10mm</option>
-                        <option value="12">12mm</option>
+                        <option value="3" ${currentThickness === '3' ? 'selected' : ''}>3mm</option>
+                        <option value="4" ${currentThickness === '4' ? 'selected' : ''}>4mm</option>
+                        <option value="6" ${currentThickness === '6' ? 'selected' : ''}>6mm</option>
+                        <option value="8" ${currentThickness === '8' ? 'selected' : ''}>8mm</option>
+                        <option value="9" ${currentThickness === '9' ? 'selected' : ''}>9mm</option>
+                        <option value="10" ${currentThickness === '10' ? 'selected' : ''}>10mm</option>
+                        <option value="12" ${currentThickness === '12' ? 'selected' : ''}>12mm</option>
                     </select>
                 </div>
             </div>
             ` : ''}
+
+            ${item.inventory && item.inventory.material_cost ? `
+                <div style="margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 5px; font-size: 0.9em;">
+                    <strong>Material Cost:</strong> ₦${(item.inventory.material_cost * item.quantity).toLocaleString()} 
+                    <span style="color: #666;">(${item.inventory.area_sq_ft.toFixed(2)} sq ft @ ₦${item.inventory.price_per_sq_ft}/sq ft)</span>
+                </div>
+            ` : ''}
         </div>
-    `).join('');
+        `;
+    }).join('');
     
+    // Update total section with cost breakdown
+    const bulkTotalHTML = `
+        <div style="background: #FFF8F0; padding: 25px; border-radius: 12px; margin-top: 20px; border: 2px solid #E89D3C;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                <div>
+                    <div style="font-size: 0.9em; color: #666;">Total Material Cost</div>
+                    <div style="font-size: 2em; font-weight: bold; color: #E89D3C;">₦${totalMaterialCost.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.9em; color: #666;">Total Quote Cost</div>
+                    <div id="grandTotal" style="font-size: 2em; font-weight: bold; color: #E89D3C;">₦${grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                </div>
+            </div>
+            <button class="btn" onclick="saveBulkQuote()" style="margin-top: 10px;">
+                💾 Save Complete Order
+            </button>
+        </div>
+    `;
+    
+    totalDiv.innerHTML = bulkTotalHTML;
     showElement('bulkTotal');
-}
-
-
-function updateBulkItemMaterial(itemId, material) {
-    const item = bulkItems.find(item => item.id === itemId);
-    if (item) {
-        item.material = material;
-        calculateBulkItemPrice(itemId);
-    }
-}
-
-function updateBulkItemThickness(itemId, thickness) {
-    const item = bulkItems.find(item => item.id === itemId);
-    if (item) {
-        item.thickness = parseFloat(thickness);
-        calculateBulkItemPrice(itemId);
-    }
 }
 
 // ========================================
@@ -1026,63 +1265,6 @@ function showElement(elementId) {
 function hideElement(elementId) {
     const element = typeof elementId === 'string' ? document.getElementById(elementId) : elementId;
     if (element) element.style.display = 'none';
-}
-
-function clearBulkForm() {
-    const fields = ['bulkItemName', 'bulkMaterial', 'bulkThickness', 'bulkWidth', 'bulkHeight', 
-                   'bulkLetters', 'bulkShapes', 'bulkTime', 'bulkQuantity'];
-    
-    fields.forEach(field => {
-        const element = document.getElementById(field);
-        if (element) element.value = field.includes('Quantity') ? '1' : 
-                                   field.includes('Letters') ? '0' : 
-                                   field.includes('Shapes') ? '1' : '';
-    });
-    
-    document.getElementById('bulkComplexity').value = '3';
-    document.getElementById('bulkDetails').checked = false;
-    document.getElementById('bulkRush').checked = false;
-}
-
-async function calculateBulkItemPrice(itemId) {
-    const item = bulkItems.find(item => item.id === itemId);
-    if (!item || !item.material || !item.thickness) {
-        return;
-    }
-    
-    const jobData = {
-        material: item.material,
-        thickness: item.thickness,
-        letters: item.letters,
-        shapes: item.shapes,
-        complexity: item.complexity,
-        details: item.details,
-        width: item.width,
-        height: item.height,
-        cuttingType: item.cuttingType,
-        time: item.time,
-        quantity: item.quantity,
-        rush: item.rush
-    };
-    
-    try {
-        const response = await fetch('/calculate_price', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(jobData)
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            item.price = result.price;
-            updateBulkItemsDisplay();
-        }
-    } catch (error) {
-        console.error('Error calculating bulk item price:', error);
-    }
 }
 
 function removeItemFromBulk(itemId) {
@@ -1448,4 +1630,135 @@ function shareQuoteToContact(quoteId, phoneNumber) {
             console.error('Error:', error);
             showNotification('Failed to share on WhatsApp', 'error');
         });
+}
+
+// ========================================
+// INVENTORY FUNCTIONS
+// ========================================
+
+// 1. Toggle the "Add Stock" form visibility
+function toggleInventoryForm() {
+    const form = document.getElementById('inventoryForm');
+    form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+// 2. Load Inventory from Database
+function loadInventory() {
+    fetch('/api/inventory')
+        .then(res => res.json())
+        .then(data => {
+            const tbody = document.getElementById('inventoryTableBody');
+            if (!tbody) {
+                console.error('Inventory table body not found in DOM');
+                return;
+            }
+            tbody.innerHTML = '';
+            
+            data.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = "1px solid #eee";
+                
+                const priceFormatted = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(item.price_sq_ft);
+
+                tr.innerHTML = `
+                    <td style="padding: 12px;"><strong>${item.material}</strong></td>
+                    <td style="padding: 12px;">${item.color}</td>
+                    <td style="padding: 12px;">${item.thickness}mm (${item.size})</td>
+                    <td style="padding: 12px; text-align: center; font-weight: bold; color: ${item.stock < 5 ? 'red' : 'green'}">
+                        ${item.stock}
+                    </td>
+                    <td style="padding: 12px; text-align: right;">${priceFormatted}</td>
+                    <td style="padding: 12px; text-align: center;">
+                        <button onclick="viewHistory(${item.id})" style="cursor: pointer;">📜</button>
+                    </td>
+                    <td style="padding: 12px; text-align: center;">
+                        <button onclick="deleteInventory(${item.id})" style="color: red; border: none; background: none; cursor: pointer;">🗑️</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        });
+}
+
+// View Inventory History
+async function viewHistory(id) {
+    const password = await showModalInput("Admin Access", "Password for History:", "Password");
+    
+    fetch(`/api/inventory/history/${id}`, {
+        headers: { 'X-Admin-Key': password }
+    })
+    .then(res => res.json())
+    .then(data => {
+        const list = document.getElementById('historyList');
+        list.innerHTML = '';
+        if(data.length === 0) list.innerHTML = '<li>No history yet.</li>';
+        
+        data.forEach(t => {
+            const color = t.change > 0 ? 'green' : 'red';
+            const symbol = t.change > 0 ? '📥' : '📤';
+            const item = document.createElement('li');
+            item.style.padding = "8px 0";
+            item.style.borderBottom = "1px solid #eee";
+            item.innerHTML = `
+                <span style="color:#888; font-size:0.8em">${t.date}</span><br>
+                <strong>${symbol} ${t.type.toUpperCase()}</strong>: 
+                <span style="color:${color}; font-weight:bold">${t.change}</span> 
+                <br><em>${t.note || ''}</em>
+            `;
+            list.appendChild(item);
+        });
+        document.getElementById('historyModal').style.display = 'block';
+    });
+}
+
+// 3. Submit New Stock
+async function submitInventory() {
+    const password = await showModalInput("Admin Access", "Enter admin password:", "Password");
+    
+    const data = {
+        material: document.getElementById('inv_material').value,
+        color: document.getElementById('inv_color').value,
+        thickness: document.getElementById('inv_thickness').value,
+        width: document.getElementById('inv_width').value,
+        height: document.getElementById('inv_height').value,
+        quantity: document.getElementById('inv_quantity').value,
+        price_sq_ft: document.getElementById('inv_price').value,
+        note: document.getElementById('inv_note').value
+    };
+
+    fetch('/api/inventory/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': password },
+        body: JSON.stringify(data)
+    })
+    .then(res => res.json())
+    .then(result => {
+        if (result.status === 'success') {
+            showNotification("Stock Updated", "success");
+            loadInventory();
+        } else {
+            showNotification(result.message, "error");
+        }
+    });
+}
+
+// 4. Delete Item
+async function deleteInventory(id) {
+    if(!confirm("Are you sure you want to delete this inventory item?")) return;
+
+    const password = await showModalInput("Admin Access", "Enter admin password to delete:", "Password");
+    
+    fetch(`/api/inventory/delete/${id}`, {
+        method: 'DELETE',
+        headers: { 'X-Admin-Key': password }
+    })
+    .then(res => res.json())
+    .then(result => {
+        if (result.status === 'success') {
+            showNotification("Item deleted", "success");
+            loadInventory();
+        } else {
+            showNotification(result.message, "error");
+        }
+    });
 }

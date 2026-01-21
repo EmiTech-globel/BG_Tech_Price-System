@@ -23,21 +23,107 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from io import BytesIO
 from datetime import datetime
+from dotenv import load_dotenv
+from functools import wraps
+from flask import Response, request
+
+# Load environment variables from .env file
+load_dotenv()
 
 app = Flask(__name__)
 
-# Database configuration - Production ready
+# --- CONFIGURATION & PATH SETUP ---
+
+# 2. Define Paths
 basedir = os.path.abspath(os.path.dirname(__file__))
-instance_path = os.path.join(basedir, "instance")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 'instance' is the persistent storage area
+INSTANCE_PATH = os.path.join(BASE_DIR, 'instance')
+# 'data' is where the original shipping files live
+DATA_PATH = os.path.join(BASE_DIR, 'data')
 
 # Ensure instance directory exists
-os.makedirs(instance_path, exist_ok=True)
-os.makedirs(os.path.join(basedir, 'data'), exist_ok=True)
+os.makedirs(INSTANCE_PATH, exist_ok=True)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(instance_path, "quotes.db")}'
+# --- SECURITY: AUTH DECORATOR (supports both Basic Auth and Custom Header) ---
+def check_auth(username, password):
+    valid_user = os.environ.get('ADMIN_USERNAME', 'admin')
+    valid_pass = os.environ.get('ADMIN_PASSWORD', 'admin')
+    return username == valid_user and password == valid_pass
+
+def authenticate():
+    return Response(
+    'Could not verify your access level for that URL.\n'
+    'You have to login with proper credentials', 401,
+    {'WWW-Authenticate': 'Basic realm="Login Required"'})
+
+def requires_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # Check for custom header first (used by frontend AJAX requests)
+        admin_key = request.headers.get('X-Admin-Key')
+        if admin_key:
+            valid_pass = os.environ.get('ADMIN_PASSWORD', 'admin')
+            if admin_key == valid_pass:
+                return f(*args, **kwargs)
+        
+        # Fall back to HTTP Basic Auth (for routes like /delete_quote)
+        auth = request.authorization
+        if auth and check_auth(auth.username, auth.password):
+            return f(*args, **kwargs)
+        
+        # Neither authentication method succeeded
+        return authenticate()
+    return decorated
+
+# --- DATABASE CONFIGURATION ---
+database_url = os.environ.get('DATABASE_URL')
+
+if not database_url:
+    # Safety Check: If no URL is found, warn the user instead of silently falling back to SQLite
+    raise ValueError("No DATABASE_URL found! Please create a .env file locally or set the var on Render.")
+
+# Fix for SQLAlchemy compatibility (Render/Supabase use 'postgres://', SQLAlchemy needs 'postgresql://')
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
 db = SQLAlchemy(app)
+
+# --- MODEL LOADING LOGIC ---
+
+MODEL_FILENAME = 'cnc_laser_pricing_model.pkl'
+DATASET_FILENAME = 'cnc_historical_jobs.csv'
+
+# Logic: Check Persistent Storage (instance/) first. If missing, use Default (data/).
+if os.path.exists(os.path.join(INSTANCE_PATH, MODEL_FILENAME)):
+    MODEL_PATH = os.path.join(INSTANCE_PATH, MODEL_FILENAME)
+    print(f"Loading model from Persistent Storage: {MODEL_PATH}")
+else:
+    # Fallback to the files you shipped with the code
+    MODEL_PATH = os.path.join(DATA_PATH, MODEL_FILENAME)
+    print(f"Loading default model from: {MODEL_PATH}")
+
+# Same logic for the training dataset
+if os.path.exists(os.path.join(INSTANCE_PATH, DATASET_FILENAME)):
+    DATASET_PATH = os.path.join(INSTANCE_PATH, DATASET_FILENAME)
+else:
+    DATASET_PATH = os.path.join(DATA_PATH, DATASET_FILENAME)
+
+# Load the model safely
+try:
+    with open(MODEL_PATH, 'rb') as f:
+        model_data = pickle.load(f)
+        # Handle case where pickle contains just the model or a dict of metadata
+        if isinstance(model_data, dict) and 'model' in model_data:
+            model = model_data['model']
+        else:
+            model = model_data
+except Exception as e:
+    print(f"CRITICAL ERROR loading model: {e}")
+    model = None
 
 # ========================================
 # DATABASE MODEL
@@ -143,22 +229,107 @@ class QuoteItem(db.Model):
             'rush_job': self.rush_job,
             'item_price': self.item_price
         }
+    
+class TrainingData(db.Model):
+    __tablename__ = 'training_data'
+    id = db.Column(db.Integer, primary_key=True)
+    material = db.Column(db.String(100), nullable=False)
+    thickness_mm = db.Column(db.Float, nullable=False)
+    num_letters = db.Column(db.Integer, nullable=False)
+    num_shapes = db.Column(db.Integer, nullable=False)
+    complexity_score = db.Column(db.Integer, nullable=False)
+    has_intricate_details = db.Column(db.Integer, nullable=False) # 0 or 1
+    width_mm = db.Column(db.Float, nullable=False)
+    height_mm = db.Column(db.Float, nullable=False)
+    cutting_type = db.Column(db.String(100), nullable=False)
+    cutting_time_minutes = db.Column(db.Float, nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
+    rush_job = db.Column(db.Integer, nullable=False) # 0 or 1
+    price = db.Column(db.Float, nullable=False) # The 'target' for the AI
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        """Converts the database row to a dictionary for Pandas/ML"""
+        return {
+            "material": self.material,
+            "thickness_mm": self.thickness_mm,
+            "num_letters": self.num_letters,
+            "num_shapes": self.num_shapes,
+            "complexity_score": self.complexity_score,
+            "has_intricate_details": self.has_intricate_details,
+            "width_mm": self.width_mm,
+            "height_mm": self.height_mm,
+            "cutting_type": self.cutting_type,
+            "cutting_time_minutes": self.cutting_time_minutes,
+            "quantity": self.quantity,
+            "rush_job": self.rush_job,
+            "price": self.price
+        }
+    
+class Inventory(db.Model):
+    __tablename__ = 'inventory'
+    id = db.Column(db.Integer, primary_key=True)
+    material_name = db.Column(db.String(100), nullable=False)
+    color = db.Column(db.String(50), nullable=True)          # New Field
+    thickness_mm = db.Column(db.Float, nullable=False)
+    sheet_width_mm = db.Column(db.Float, nullable=False)
+    sheet_height_mm = db.Column(db.Float, nullable=False)
+    quantity_on_hand = db.Column(db.Integer, default=0)      # "What is left"
+    price_per_sq_ft = db.Column(db.Float, nullable=False)    # New Pricing Unit
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Relationship to history
+    transactions = db.relationship('InventoryTransaction', backref='item', lazy=True, cascade="all, delete-orphan")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "material": self.material_name,
+            "color": self.color or "N/A",
+            "thickness": self.thickness_mm,
+            "size": f"{self.sheet_width_mm}x{self.sheet_height_mm}",
+            "stock": self.quantity_on_hand,
+            "price_sq_ft": self.price_per_sq_ft
+        }
+
+class InventoryTransaction(db.Model):
+    __tablename__ = 'inventory_transaction'
+    id = db.Column(db.Integer, primary_key=True)
+    inventory_id = db.Column(db.Integer, db.ForeignKey('inventory.id'), nullable=False)
+    change_amount = db.Column(db.Integer, nullable=False)    # +10 (In) or -5 (Out)
+    transaction_type = db.Column(db.String(20), nullable=False) # 'stock_in' or 'stock_out'
+    note = db.Column(db.String(200)) # e.g. "Restock" or "Used for Job #102"
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "date": self.created_at.strftime('%Y-%m-%d %H:%M'),
+            "type": self.transaction_type,
+            "change": self.change_amount,
+            "note": self.note
+        }
+
 # ========================================
-# LOAD TRAINED MODEL
+# LOAD TRAINED MODEL (already loaded above at lines 106-116)
 # ========================================
 
-MODEL_PATH = os.path.join(basedir, 'data', 'cnc_laser_pricing_model.pkl')
-CSV_PATH = os.path.join(basedir, 'data', 'cnc_historical_jobs.csv')
+# Use DATASET_PATH (set at lines 100-103) for CSV operations
+CSV_PATH = DATASET_PATH
 
+# Extract columns from the already-loaded model
 try:
-    with open(MODEL_PATH, 'rb') as f:
-        saved_data = pickle.load(f)
-        model = saved_data['model']
-        columns = saved_data['columns']
-    print("Model loaded successfully!")
+    if model is not None:
+        # Try to get columns from saved model data
+        with open(MODEL_PATH, 'rb') as f:
+            saved_data = pickle.load(f)
+            if isinstance(saved_data, dict) and 'columns' in saved_data:
+                columns = saved_data['columns']
+            else:
+                columns = None
+    else:
+        columns = None
 except Exception as e:
-    print(f"Error loading model: {e}")
-    model = None
+    print(f"Error extracting columns: {e}")
     columns = None
 
 # ========================================
@@ -549,28 +720,82 @@ def spatial_cluster_entities(entity_boxes, cluster_threshold=50):
     
     return clusters
 
-def count_connected_line_groups(line_segments, tolerance=0.1):
+def count_connected_line_groups(line_segments, tolerance=0.5):
     """
-    Group connected line segments into shapes.
-    Lines that share endpoints are considered part of the same shape.
+    Group connected line segments into shapes using connectivity tracking.
+    Lines that share endpoints (within tolerance) are part of the same shape.
+    
+    Example: 4 connected lines forming a square = 1 shape, NOT 4 entities
     """
     if not line_segments:
         return 0
     
-    # Simple approach: assume every 4-6 connected lines form a shape (rectangle/polygon)
-    # For more accuracy, we'd need to trace connections
+    from collections import defaultdict
     
-    # Conservative estimate: divide total lines by average lines per shape
-    num_lines = len(line_segments)
+    print(f"  Smart connectivity analysis: {len(line_segments)} line segments")
     
-    # Most shapes use 3-6 lines (triangles to hexagons, curved shapes broken into segments)
-    avg_lines_per_shape = 5
+    # Extract endpoints from all line segments
+    endpoints = defaultdict(list)
+    line_data = []
     
-    estimated_shapes = max(1, num_lines // avg_lines_per_shape)
+    for idx, line in enumerate(line_segments):
+        try:
+            start = line.dxf.start
+            end = line.dxf.end
+            
+            # Convert to tuples, rounding to tolerance for matching
+            start_tuple = (round(start[0], 1), round(start[1], 1))
+            end_tuple = (round(end[0], 1), round(end[1], 1))
+            
+            line_data.append({
+                'idx': idx,
+                'start': start_tuple,
+                'end': end_tuple,
+                'entity': line
+            })
+            
+            # Map endpoints to line indices
+            endpoints[start_tuple].append(idx)
+            endpoints[end_tuple].append(idx)
+            
+        except Exception as e:
+            print(f"  ⚠ Could not extract endpoints: {e}")
+            continue
     
-    print(f"  {num_lines} line segments grouped into ~{estimated_shapes} shapes")
+    # Build connectivity graph using Union-Find
+    parent = list(range(len(line_data)))
     
-    return estimated_shapes
+    def find(i):
+        if parent[i] != i:
+            parent[i] = find(parent[i])
+        return parent[i]
+    
+    def union(i, j):
+        root_i = find(i)
+        root_j = find(j)
+        if root_i != root_j:
+            parent[root_i] = root_j
+    
+    # Connect lines that share endpoints
+    for endpoint, line_indices in endpoints.items():
+        for i in range(len(line_indices) - 1):
+            union(line_indices[i], line_indices[i + 1])
+    
+    # Count unique connected groups
+    unique_groups = len(set(find(i) for i in range(len(line_data))))
+    
+    print(f"  ✓ Found {unique_groups} connected line group(s)")
+    
+    # Debug: Show group composition
+    groups_by_root = defaultdict(list)
+    for idx in range(len(line_data)):
+        root = find(idx)
+        groups_by_root[root].append(idx)
+    
+    for group_num, (root, indices) in enumerate(sorted(groups_by_root.items()), 1):
+        print(f"    Group {group_num}: {len(indices)} connected lines")
+    
+    return max(1, unique_groups)
 
 def calculate_improved_complexity(shape_count, text_count, width, height):
     """
@@ -935,7 +1160,7 @@ def round_price_smartly(price):
 
 def predict_price(job_data):
     """Predict price using trained model - WITH SMART ROUNDING"""
-    if model is None:
+    if model is None or columns is None:
         return None
     
     try:
@@ -1296,7 +1521,7 @@ def analyze_file():
         return jsonify(analysis)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
-    
+
 @app.route('/analyze_dxf_file', methods=['POST'])
 def analyze_dxf_file_route():
     """Analyze uploaded DXF file"""
@@ -1311,16 +1536,13 @@ def analyze_dxf_file_route():
         return jsonify({'success': False, 'error': 'Only DXF files supported'})
     
     try:
-        file_content = file.read()
-        analysis = analyze_dxf_file(file_content)
+        dxf_content = file.read()
+        analysis = analyze_dxf_file(dxf_content)
         return jsonify(analysis)
     except Exception as e:
         import traceback
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
     
 @app.route('/debug_upload', methods=['POST'])
 def debug_upload():
@@ -1356,9 +1578,107 @@ def debug_upload():
         debug_info['error'] = str(e)
         return jsonify({'success': False, 'debug_info': debug_info})
 
+# ========================================
+# SMART PRICING WITH INVENTORY INTEGRATION
+# Add these helper functions to your app.py
+# ========================================
+
+def check_material_availability(material, thickness, width_mm, height_mm):
+    """
+    Check if material is available in inventory and calculate costs
+    Returns: dict with availability, stock info, and material cost
+    """
+    try:
+        # Find matching material in inventory (case-insensitive)
+        inventory_item = Inventory.query.filter(
+            db.func.lower(Inventory.material_name) == material.lower(),
+            Inventory.thickness_mm == thickness
+        ).first()
+        
+        if not inventory_item:
+            return {
+                'available': False,
+                'in_stock': False,
+                'stock_count': 0,
+                'material_cost': 0,
+                'message': f'{material} ({thickness}mm) not found in inventory',
+                'warning': 'Material not tracked in inventory'
+            }
+        
+        # Calculate area needed in square feet
+        # 1 sq ft = 92,903 sq mm
+        area_sq_mm = width_mm * height_mm
+        area_sq_ft = area_sq_mm / 92903
+        
+        # Calculate material cost
+        material_cost = area_sq_ft * inventory_item.price_per_sq_ft
+        
+        # Check if enough stock
+        in_stock = inventory_item.quantity_on_hand > 0
+        
+        result = {
+            'available': True,
+            'in_stock': in_stock,
+            'stock_count': inventory_item.quantity_on_hand,
+            'material_cost': round(material_cost, 2),
+            'price_per_sq_ft': inventory_item.price_per_sq_ft,
+            'area_sq_ft': round(area_sq_ft, 4),
+            'color': inventory_item.color,
+            'inventory_id': inventory_item.id
+        }
+        
+        if in_stock:
+            result['message'] = f'✅ In Stock ({inventory_item.quantity_on_hand} sheets available)'
+        else:
+            result['message'] = f'❌ Out of Stock - Need to reorder'
+            result['warning'] = 'Material currently unavailable'
+        
+        return result
+        
+    except Exception as e:
+        print(f"Error checking inventory: {e}")
+        return {
+            'available': False,
+            'in_stock': False,
+            'stock_count': 0,
+            'material_cost': 0,
+            'message': 'Error checking inventory',
+            'error': str(e)
+        }
+
+def calculate_profit_margin(quoted_price, material_cost, cutting_time_minutes):
+    """
+    Calculate profit margin and warn if too low
+    """
+    # Estimate labor/machine cost (₦200 per minute as example)
+    labor_cost = cutting_time_minutes * 200
+    
+    # Calculate overhead (20% of quoted price as example)
+    overhead = quoted_price * 0.20
+    
+    total_cost = material_cost + labor_cost + overhead
+    profit = quoted_price - total_cost
+    profit_margin = (profit / quoted_price * 100) if quoted_price > 0 else 0
+    
+    return {
+        'material_cost': round(material_cost, 2),
+        'labor_cost': round(labor_cost, 2),
+        'overhead': round(overhead, 2),
+        'total_cost': round(total_cost, 2),
+        'profit': round(profit, 2),
+        'profit_margin': round(profit_margin, 2),
+        'profitable': profit > 0,
+        'warning': 'Price too low - losing money!' if profit < 0 else None
+    }
+
+# ========================================
+# UPDATED CALCULATE PRICE ROUTE
+# Replace your existing /calculate_price route
+# ========================================
+
 @app.route('/calculate_price', methods=['POST'])
 def calculate_price():
-    """Calculate price for a job"""
+    """Calculate price with inventory integration"""
     try:
         data = request.get_json()
         
@@ -1377,14 +1697,117 @@ def calculate_price():
             'rush_job': int(data.get('rush', 0))
         }
         
+        # Get AI predicted price
         price = predict_price(job_data)
         
         if price is None:
             return jsonify({'success': False, 'error': 'Could not calculate price'})
         
-        return jsonify({'success': True, 'price': price})
+        # Check inventory availability
+        inventory_check = check_material_availability(
+            job_data['material'],
+            job_data['thickness_mm'],
+            job_data['width_mm'],
+            job_data['height_mm']
+        )
+        
+        # Calculate profit analysis
+        profit_analysis = calculate_profit_margin(
+            price,
+            inventory_check['material_cost'] * job_data['quantity'],
+            job_data['cutting_time_minutes']
+        )
+        
+        # Build response with all information
+        response = {
+            'success': True,
+            'price': price,
+            'inventory': inventory_check,
+            'profit_analysis': profit_analysis
+        }
+        
+        # Add warnings if necessary
+        warnings = []
+        if not inventory_check['in_stock']:
+            warnings.append(inventory_check['message'])
+        if profit_analysis.get('warning'):
+            warnings.append(profit_analysis['warning'])
+        
+        if warnings:
+            response['warnings'] = warnings
+        
+        return jsonify(response)
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+# ========================================
+# BULK PRICING WITH INVENTORY CHECK
+# Replace your existing /calculate_price route for bulk
+# ========================================
+
+@app.route('/calculate_bulk_prices', methods=['POST'])
+def calculate_bulk_prices():
+    """Calculate prices for multiple items with inventory checks"""
+    try:
+        items = request.get_json().get('items', [])
+        results = []
+        
+        total_material_cost = 0
+        all_in_stock = True
+        warnings = []
+        
+        for item in items:
+            job_data = {
+                'material': item['material'],
+                'thickness_mm': float(item['thickness']),
+                'num_letters': int(item.get('letters', 0)),
+                'num_shapes': int(item.get('shapes', 1)),
+                'complexity_score': int(item.get('complexity', 3)),
+                'has_intricate_details': int(item.get('details', 0)),
+                'width_mm': float(item['width']),
+                'height_mm': float(item['height']),
+                'cutting_type': item['cuttingType'],
+                'cutting_time_minutes': float(item['time']),
+                'quantity': int(item.get('quantity', 1)),
+                'rush_job': int(item.get('rush', 0))
+            }
+            
+            price = predict_price(job_data)
+            inventory_check = check_material_availability(
+                job_data['material'],
+                job_data['thickness_mm'],
+                job_data['width_mm'],
+                job_data['height_mm']
+            )
+            
+            item_result = {
+                'item_id': item.get('id'),
+                'price': price,
+                'inventory': inventory_check,
+                'material_cost': inventory_check['material_cost'] * job_data['quantity']
+            }
+            
+            results.append(item_result)
+            total_material_cost += item_result['material_cost']
+            
+            if not inventory_check['in_stock']:
+                all_in_stock = False
+                warnings.append(f"{item.get('name', 'Item')}: {inventory_check['message']}")
+        
+        return jsonify({
+            'success': True,
+            'items': results,
+            'total_material_cost': round(total_material_cost, 2),
+            'all_in_stock': all_in_stock,
+            'warnings': warnings if warnings else None
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/save_quote', methods=['POST'])
@@ -1473,6 +1896,7 @@ def search_quotes():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/delete_quote/<int:quote_id>', methods=['DELETE'])
+@requires_auth
 def delete_quote(quote_id):
     """Delete a quote"""
     try:
@@ -1594,65 +2018,150 @@ _Generated by BrainGain Tech Pricing System_
         print(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)}), 500  
 
-@app.route('/add_training_job', methods=['POST'])
-def add_training_job():
-    """Add a new job to training data CSV"""
+# --- INVENTORY ROUTES ---
+@app.route('/api/inventory', methods=['GET'])
+def get_inventory():
+    items = Inventory.query.all()
+    return jsonify([i.to_dict() for i in items])
+
+@app.route('/api/inventory/history/<int:item_id>', methods=['GET'])
+@requires_auth
+def get_stock_history(item_id):
+    """Get the In/Out history for a specific material"""
+    transactions = InventoryTransaction.query.filter_by(inventory_id=item_id).order_by(InventoryTransaction.created_at.desc()).all()
+    return jsonify([t.to_dict() for t in transactions])
+
+@app.route('/api/inventory/add', methods=['POST'])
+@requires_auth
+def add_inventory():
     try:
-        data = request.get_json()
+        data = request.json
         
-        # Read existing CSV
-        csv_path = CSV_PATH
+        # Parse Inputs
+        material = data.get('material')
+        color = data.get('color', 'Clear') # Default to Clear if empty
+        thickness = float(data.get('thickness', 0))
+        width = float(data.get('width', 0))
+        height = float(data.get('height', 0))
+        qty_change = int(data.get('quantity', 0))
+        price_sq_ft = float(data.get('price_sq_ft', 0)) # User Manually Sets This
+        note = data.get('note', 'Initial Stock')
+
+        # Check for existing item
+        existing = Inventory.query.filter_by(
+            material_name=material,
+            color=color,
+            thickness_mm=thickness
+        ).first()
+
+        if existing:
+            # Update existing item
+            existing.quantity_on_hand += qty_change
+            existing.price_per_sq_ft = price_sq_ft # Update price if changed
+            existing.updated_at = datetime.utcnow()
+            
+            # Log Transaction
+            trans_type = 'stock_in' if qty_change > 0 else 'stock_out'
+            new_trans = InventoryTransaction(
+                inventory_id=existing.id,
+                change_amount=qty_change,
+                transaction_type=trans_type,
+                note=note
+            )
+            db.session.add(new_trans)
+            action = "updated"
+        else:
+            # Create new item
+            new_item = Inventory(
+                material_name=material,
+                color=color,
+                thickness_mm=thickness,
+                sheet_width_mm=width,
+                sheet_height_mm=height,
+                quantity_on_hand=qty_change,
+                price_per_sq_ft=price_sq_ft
+            )
+            db.session.add(new_item)
+            db.session.flush() # Get the ID before committing
+            
+            # Log Initial Transaction
+            new_trans = InventoryTransaction(
+                inventory_id=new_item.id,
+                change_amount=qty_change,
+                transaction_type='stock_in',
+                note="New Material Created"
+            )
+            db.session.add(new_trans)
+            action = "created"
+
+        db.session.commit()
+        return jsonify({"status": "success", "message": f"Stock {action} successfully"})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/inventory/delete/<int:item_id>', methods=['DELETE'])
+@requires_auth
+def delete_inventory(item_id):
+    try:
+        item = Inventory.query.get(item_id)
+        if item:
+            db.session.delete(item)
+            db.session.commit()
+            return jsonify({"status": "success", "message": "Item deleted"})
+        return jsonify({"status": "error", "message": "Item not found"}), 404
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/add_training_job', methods=['POST'])
+@requires_auth
+def add_training_job():
+    try:
+        data = request.json
+        if not data:
+            return jsonify({"status": "error", "message": "No data received"}), 400
+
+        # Helper: Safely convert to float/int, returning 0 if empty or invalid
+        def safe_float(val):
+            try:
+                if val is None or str(val).strip() == "": return 0.0
+                return float(val)
+            except (ValueError, TypeError):
+                return 0.0
+
+        def safe_int(val):
+            try:
+                if val is None or str(val).strip() == "": return 0
+                return int(float(val)) # Handle "3.0" strings safely
+            except (ValueError, TypeError):
+                return 0
+
+        # Create new record safely
+        new_entry = TrainingData(
+            material=data.get('material', 'Unknown'),
+            thickness_mm=safe_float(data.get('thickness_mm')),
+            num_letters=safe_int(data.get('num_letters')),
+            num_shapes=safe_int(data.get('num_shapes')),
+            complexity_score=safe_int(data.get('complexity_score')) or 1,
+            has_intricate_details=safe_int(data.get('has_intricate_details')),
+            width_mm=safe_float(data.get('width_mm')),
+            height_mm=safe_float(data.get('height_mm')),
+            cutting_type=data.get('cutting_type', 'Laser'),
+            cutting_time_minutes=safe_float(data.get('cutting_time_minutes')),
+            quantity=safe_int(data.get('quantity')) or 1,
+            rush_job=safe_int(data.get('rush_job')),
+            price=safe_float(data.get('price'))
+        )
         
-        if not os.path.exists(csv_path):
-            return jsonify({'success': False, 'error': 'CSV file not found'})
+        db.session.add(new_entry)
+        db.session.commit()
         
-        df = pd.read_csv(csv_path)
-        
-        # Get column order from existing CSV
-        column_order = df.columns.tolist()
-        
-        # Prepare new job data with cleaned numbers
-        new_job = {
-            'material': data.get('material', ''),
-            'thickness_mm': float(clean_number(data.get('thickness', 0))),
-            'num_letters': int(clean_number(data.get('letters', 0))),
-            'num_shapes': int(clean_number(data.get('shapes', 1))),
-            'complexity_score': int(clean_number(data.get('complexity', 3))),
-            'has_intricate_details': int(clean_number(data.get('details', 0))),
-            'width_mm': float(clean_number(data.get('width', 0))),
-            'height_mm': float(clean_number(data.get('height', 0))),
-            'cutting_type': data.get('cuttingType', ''),
-            'cutting_time_minutes': float(clean_number(data.get('time', 0))),
-            'quantity': int(clean_number(data.get('quantity', 1))),
-            'rush_job': int(clean_number(data.get('rush', 0))),
-            'price': float(clean_number(data.get('price', 0)))
-        }
-        
-        # Create new row with same column order as CSV
-        new_row = pd.DataFrame([new_job])
-        
-        # Reorder to match existing CSV columns
-        new_row = new_row[column_order]
-        
-        # Append new row
-        df = pd.concat([df, new_row], ignore_index=True)
-        
-        # Save back to CSV
-        df.to_csv(csv_path, index=False)
-        
-        return jsonify({
-            'success': True,
-            'message': f'Job added successfully! Total jobs: {len(df)}',
-            'total_jobs': len(df)
-        })
+        return jsonify({"success": True, "message": "Job added to database!"})
         
     except Exception as e:
-        import traceback
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
+        print(f"ERROR Adding Job: {e}") 
+        db.session.rollback()
+        return jsonify({"success": False, "error": f"Server Error: {str(e)}"}), 500
 
 @app.route('/get_training_stats', methods=['GET'])
 def get_training_stats():
@@ -1683,32 +2192,45 @@ def get_training_stats():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/retrain_model', methods=['POST'])
+@requires_auth
 def retrain_model():
-    """Retrain the pricing model with current data"""
+    """Retrain the pricing model with current data from Supabase"""
+    # Declare globals at the start of the function
+    global model, columns, MODEL_PATH
+    
     try:
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import mean_absolute_error, r2_score as calculate_r2
         from sklearn.ensemble import RandomForestRegressor
+        import pandas as pd
+        import pickle
+        import os
+
+        # 1. Load data from Supabase instead of CSV
+        # We query the TrainingData model and convert it to a DataFrame
+        records = TrainingData.query.all()
+        if not records:
+             return jsonify({
+                'success': False,
+                'error': 'The training_data table is empty. Add some jobs first!'
+            })
+            
+        df = pd.DataFrame([r.to_dict() for r in records])
         
-        # Load data
-        df = pd.read_csv(CSV_PATH)
-        
-        # Clean price column if it contains strings
-        if df['price'].dtype == 'object':
-            df['price'] = df['price'].apply(lambda x: clean_number(x))
-            df['price'] = pd.to_numeric(df['price'], errors='coerce')
-        
-        # Clean all numeric columns
-        numeric_cols = ['thickness_mm', 'width_mm', 'height_mm', 'cutting_time_minutes']
+        # 2. Data Cleaning (Ensuring all numeric fields are proper floats/ints)
+        numeric_cols = [
+            'thickness_mm', 'width_mm', 'height_mm', 'num_letters', 
+            'num_shapes', 'complexity_score', 'cutting_time_minutes', 
+            'quantity', 'price'
+        ]
         for col in numeric_cols:
-            if col in df.columns and df[col].dtype == 'object':
-                df[col] = df[col].apply(lambda x: clean_number(x))
+            if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Remove rows with any missing values
+        # Remove any rows that failed conversion
         df = df.dropna()
 
-        # Determine number of new rows since last saved model (if present)
+        # 3. Training Requirements Logic
         prev_total = 0
         if os.path.exists(MODEL_PATH):
             try:
@@ -1720,35 +2242,30 @@ def retrain_model():
 
         new_jobs = max(0, len(df) - prev_total)
 
-        # If a previous model exists, require at least 20 NEW jobs since that model
+        # Requirement: At least 20 total jobs, and 20 NEW jobs if a model exists
         if prev_total > 0:
             if new_jobs < 20:
                 return jsonify({
                     'success': False,
-                    'error': f'Need at least 20 NEW jobs since last model to retrain. New jobs: {new_jobs} (total rows: {len(df)})'
+                    'error': f'Need at least 20 NEW jobs since last model. New jobs: {new_jobs} (Total: {len(df)})'
                 })
         else:
-            # No previous model: require at least 20 total rows
             if len(df) < 20:
                 return jsonify({
                     'success': False,
-                    'error': f'Need at least 20 jobs to retrain effectively. Current: {len(df)} jobs'
+                    'error': f'Need at least 20 total jobs to train. Current: {len(df)}'
                 })
         
-        # Prepare data for training
-        df_encoded = df.copy()
-        df_encoded = pd.get_dummies(df_encoded, columns=['material', 'cutting_type'], 
-                                    prefix=['mat', 'cut'])
+        # 4. Feature Engineering (One-Hot Encoding)
+        # This handles 'material' and 'cutting_type' strings automatically
+        df_encoded = pd.get_dummies(df, columns=['material', 'cutting_type'], prefix=['mat', 'cut'])
         
-        X = df_encoded.drop('price', axis=1)
+        X = df_encoded.drop(['price'], axis=1)
         y = df_encoded['price']
         
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
+        # 5. Model Training
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
-        # Train new model
         new_model = RandomForestRegressor(
             n_estimators=150,
             max_depth=20,
@@ -1760,32 +2277,37 @@ def retrain_model():
         
         new_model.fit(X_train, y_train)
         
-        # Evaluate model
+        # 6. Evaluation
         y_pred = new_model.predict(X_test)
         mae = mean_absolute_error(y_test, y_pred)
         r2 = calculate_r2(y_test, y_pred)
         
-        # Save new model
+        # 7. Save to Persistent Storage (ALWAYS save to instance/)
+        # Construct the persistent storage path for the new model
+        persistent_model_path = os.path.join(INSTANCE_PATH, MODEL_FILENAME)
+        
         model_data = {
             'model': new_model,
-            'columns': X.columns,
+            'columns': X.columns.tolist(), # Store columns as list for easier matching
             'training_date': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S'),
             'total_jobs': len(df),
             'r2_score': r2,
             'mae': mae
         }
         
-        with open(MODEL_PATH, 'wb') as f:
+        with open(persistent_model_path, 'wb') as f:
             pickle.dump(model_data, f)
         
-        # Update global model
-        global model, columns
+        print(f"Model saved to persistent storage: {persistent_model_path}")
+        
+        # Update global variables so the app uses the new model immediately
         model = new_model
-        columns = X.columns
+        columns = X.columns.tolist()  # Convert to list for consistency with saved format
+        MODEL_PATH = persistent_model_path  # Update to point to persistent storage
         
         return jsonify({
             'success': True,
-            'message': 'Model retrained successfully!',
+            'message': 'Model retrained successfully using Supabase data!',
             'total_jobs': len(df),
             'r2_score': round(r2, 3),
             'mae': round(mae, 2)
@@ -1800,6 +2322,7 @@ def retrain_model():
         })
 
 @app.route('/health')
+@requires_auth
 def health():
     """Check if app is running"""
     return jsonify({
