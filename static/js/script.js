@@ -189,6 +189,52 @@ function showModalAlert(title, message, type = 'info') {
 let bulkItemCounter = 0;
 
 // ========================================
+// AUTHENTICATION CHECK AND LOGOUT
+// ========================================
+
+// Check if admin is authenticated
+async function checkAuth() {
+    try {
+        const response = await fetch('/api/auth/check');
+        if (!response.ok) {
+            window.location.href = '/admin/login';
+        }
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        window.location.href = '/admin/login';
+    }
+}
+
+// Handle logout
+async function handleLogout() {
+    if (!confirm('Are you sure you want to logout?')) {
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/auth/logout', {
+            method: 'POST'
+        });
+        
+        const data = await response.json();
+        window.location.href = data.redirect || '/admin/login';
+    } catch (error) {
+        console.error('Logout error:', error);
+        window.location.href = '/admin/login';
+    }
+}
+
+// Run auth check on load
+checkAuth();
+
+// Load initial data
+window.addEventListener('load', () => {
+    loadQuotes();
+    loadInventory();
+    updateTrainingStats();
+});
+
+// ========================================
 // TAB MANAGEMENT FUNCTIONS
 // ========================================
 
@@ -635,8 +681,9 @@ async function saveCurrentQuote() {
             document.getElementById('customerForm').style.display = 'none';
             document.getElementById('saveQuoteBtn').style.display = 'block';
             
-            // Refresh quotes list if on quotes tab
-            if (document.getElementById('quotes').classList.contains('active')) {
+            // Refresh quotes list if on quotes tab (only if element exists)
+            const quotesTab = document.getElementById('quotes');
+            if (quotesTab && quotesTab.classList.contains('active')) {
                 loadQuotes();
             }
         } else {
@@ -1644,15 +1691,29 @@ function toggleInventoryForm() {
 
 // 2. Load Inventory from Database
 function loadInventory() {
+    const tbody = document.getElementById('inventoryTableBody');
+    if (!tbody) {
+        console.error('Inventory table body not found in DOM');
+        return;
+    }
+    
+    // Show loading state
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px;">Loading inventory...</td></tr>';
+    
     fetch('/api/inventory')
-        .then(res => res.json())
+        .then(res => {
+            if (!res.ok) {
+                throw new Error('Failed to load inventory');
+            }
+            return res.json();
+        })
         .then(data => {
-            const tbody = document.getElementById('inventoryTableBody');
-            if (!tbody) {
-                console.error('Inventory table body not found in DOM');
+            tbody.innerHTML = '';
+            
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: #999;">No inventory items found. Add your first item using the "Add Stock" button above.</td></tr>';
                 return;
             }
-            tbody.innerHTML = '';
             
             data.forEach(item => {
                 const tr = document.createElement('tr');
@@ -1677,19 +1738,34 @@ function loadInventory() {
                 `;
                 tbody.appendChild(tr);
             });
+        })
+        .catch(error => {
+            console.error('Error loading inventory:', error);
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: #d9534f;">Error loading inventory. Please try again.</td></tr>';
         });
 }
 
 // View Inventory History
 async function viewHistory(id) {
-    const password = await showModalInput("Admin Access", "Password for History:", "Password");
-    
-    fetch(`/api/inventory/history/${id}`, {
-        headers: { 'X-Admin-Key': password }
+    // No password needed - backend already requires authentication
+    fetch(`/api/inventory/history/${id}`)
+    .then(res => {
+        if (!res.ok) {
+            if (res.status === 401) {
+                showNotification('Authentication required. Please login again.', 'error');
+                window.location.href = '/admin/login';
+                return;
+            }
+            throw new Error('Failed to load history');
+        }
+        return res.json();
     })
-    .then(res => res.json())
     .then(data => {
         const list = document.getElementById('historyList');
+        if (!list) {
+            console.error('History list element not found');
+            return;
+        }
         list.innerHTML = '';
         if(data.length === 0) list.innerHTML = '<li>No history yet.</li>';
         
@@ -1707,14 +1783,20 @@ async function viewHistory(id) {
             `;
             list.appendChild(item);
         });
-        document.getElementById('historyModal').style.display = 'block';
+        const historyModal = document.getElementById('historyModal');
+        if (historyModal) {
+            historyModal.style.display = 'block';
+        }
+    })
+    .catch(error => {
+        console.error('Error loading history:', error);
+        showNotification('Failed to load inventory history', 'error');
     });
 }
 
 // 3. Submit New Stock
 async function submitInventory() {
-    const password = await showModalInput("Admin Access", "Enter admin password:", "Password");
-    
+    // No password needed - backend already requires authentication
     const data = {
         material: document.getElementById('inv_material').value,
         color: document.getElementById('inv_color').value,
@@ -1728,31 +1810,75 @@ async function submitInventory() {
 
     fetch('/api/inventory/add', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Key': password },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
     })
-    .then(res => res.json())
+    .then(res => {
+        if (!res.ok) {
+            if (res.status === 401) {
+                showNotification('Authentication required. Please login again.', 'error');
+                window.location.href = '/admin/login';
+                return;
+            }
+            return res.json().then(err => { throw new Error(err.message || 'Failed to update inventory'); });
+        }
+        return res.json();
+    })
     .then(result => {
         if (result.status === 'success') {
             showNotification("Stock Updated", "success");
             loadInventory();
+            // Clear form
+            document.getElementById('inv_material').value = '';
+            document.getElementById('inv_color').value = '';
+            document.getElementById('inv_thickness').value = '';
+            document.getElementById('inv_width').value = '';
+            document.getElementById('inv_height').value = '';
+            document.getElementById('inv_quantity').value = '';
+            document.getElementById('inv_price').value = '';
+            document.getElementById('inv_note').value = '';
+            toggleInventoryForm(); // Hide form after successful submission
         } else {
             showNotification(result.message, "error");
         }
+    })
+    .catch(error => {
+        console.error('Error updating inventory:', error);
+        showNotification(error.message || 'Failed to update inventory', 'error');
     });
 }
 
 // 4. Delete Item
 async function deleteInventory(id) {
-    if(!confirm("Are you sure you want to delete this inventory item?")) return;
-
-    const password = await showModalInput("Admin Access", "Enter admin password to delete:", "Password");
+    // Use modal confirmation instead of plain confirm
+    const confirmed = await showModalChoice(
+        '🗑️ Delete Inventory Item',
+        'Are you sure you want to delete this inventory item? This action cannot be undone.',
+        [
+            { label: 'Cancel', value: 'no' },
+            { label: 'Delete', value: 'yes' }
+        ]
+    );
     
+    if (confirmed !== 'yes') {
+        return;
+    }
+    
+    // No password needed - backend already requires authentication
     fetch(`/api/inventory/delete/${id}`, {
-        method: 'DELETE',
-        headers: { 'X-Admin-Key': password }
+        method: 'DELETE'
     })
-    .then(res => res.json())
+    .then(res => {
+        if (!res.ok) {
+            if (res.status === 401) {
+                showNotification('Authentication required. Please login again.', 'error');
+                window.location.href = '/admin/login';
+                return;
+            }
+            return res.json().then(err => { throw new Error(err.message || 'Failed to delete inventory item'); });
+        }
+        return res.json();
+    })
     .then(result => {
         if (result.status === 'success') {
             showNotification("Item deleted", "success");
@@ -1760,5 +1886,9 @@ async function deleteInventory(id) {
         } else {
             showNotification(result.message, "error");
         }
+    })
+    .catch(error => {
+        console.error('Error deleting inventory:', error);
+        showNotification(error.message || 'Failed to delete inventory item', 'error');
     });
 }

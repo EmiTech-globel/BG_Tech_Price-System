@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Login - BrainGain Tech</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/logo.png') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/admin_login.css') }}">
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="BrainGain Tech">
+            <h1>Admin Login</h1>
+            <p>BrainGain Tech Innovation Solutions</p>
+        </div>
+        
+        <div class="login-body">
+            <div id="alertBox" class="alert"></div>
+            
+            <form id="loginForm" onsubmit="handleLogin(event)">
+                <div class="form-group">
+                    <label for="email">Email Address</label>
+                    <input 
+                        type="email" 
+                        id="email" 
+                        name="email" 
+                        placeholder="admin@braingaintech.com"
+                        required
+                        autocomplete="email"
+                    >
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        placeholder="Enter your password"
+                        required
+                        autocomplete="current-password"
+                    >
+                </div>
+                
+                <button type="submit" class="btn-login" id="loginBtn">
+                    <span class="loading-text">
+                        <span class="spinner"></span>
+                        Logging in...
+                    </span>
+                    <span class="normal-text">Login to Dashboard</span>
+                </button>
+            </form>
+            
+            <div class="back-link">
+                <a href="/">← Back to Homepage</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function handleLogin(event) {
+            event.preventDefault();
+            
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const loginBtn = document.getElementById('loginBtn');
+            const alertBox = document.getElementById('alertBox');
+            
+            // Show loading state
+            loginBtn.disabled = true;
+            loginBtn.querySelector('.loading-text').style.display = 'inline';
+            loginBtn.querySelector('.normal-text').style.display = 'none';
+            
+            // Hide previous alerts
+            alertBox.style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.success) {
+                    // Success - show message and redirect
+                    showAlert('Login successful! Redirecting...', 'success');
+                    setTimeout(() => {
+                        window.location.href = data.redirect || '/admin/dashboard';
+                    }, 500);
+                } else {
+                    // Error - show message
+                    showAlert(data.error || 'Login failed. Please try again.', 'error');
+                    resetButton();
+                }
+            } catch (error) {
+                console.error('Login error:', error);
+                showAlert('Connection error. Please check your internet and try again.', 'error');
+                resetButton();
+            }
+        }
+        
+        function showAlert(message, type) {
+            const alertBox = document.getElementById('alertBox');
+            alertBox.className = `alert alert-${type}`;
+            alertBox.textContent = message;
+            alertBox.style.display = 'block';
+        }
+        
+        function resetButton() {
+            const loginBtn = document.getElementById('loginBtn');
+            loginBtn.disabled = false;
+            loginBtn.querySelector('.loading-text').style.display = 'none';
+            loginBtn.querySelector('.normal-text').style.display = 'inline';
+        }
+        
+        // Auto-focus email field on load
+        window.addEventListener('load', () => {
+            document.getElementById('email').focus();
+        });
+        
+        // Allow Enter key to submit from password field
+        document.getElementById('password').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleLogin(e);
+            }
+        });
+    </script>
+</body>
+</html>

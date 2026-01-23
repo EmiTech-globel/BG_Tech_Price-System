@@ -26,6 +26,11 @@ from datetime import datetime
 from dotenv import load_dotenv
 from functools import wraps
 from flask import Response, request
+from functools import wraps
+from flask import request, jsonify, session, redirect, url_for
+from supabase import create_client, Client
+import os
+from datetime import timedelta
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,36 +50,67 @@ DATA_PATH = os.path.join(BASE_DIR, 'data')
 # Ensure instance directory exists
 os.makedirs(INSTANCE_PATH, exist_ok=True)
 
-# --- SECURITY: AUTH DECORATOR (supports both Basic Auth and Custom Header) ---
-def check_auth(username, password):
-    valid_user = os.environ.get('ADMIN_USERNAME', 'admin')
-    valid_pass = os.environ.get('ADMIN_PASSWORD', 'admin')
-    return username == valid_user and password == valid_pass
+# Initialize Supabase client
+SUPABASE_URL = os.environ.get('SUPABASE_URL')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
-def authenticate():
-    return Response(
-    'Could not verify your access level for that URL.\n'
-    'You have to login with proper credentials', 401,
-    {'WWW-Authenticate': 'Basic realm="Login Required"'})
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in environment variables")
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Configure Flask session for auth tokens
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=4)
+
+# ========================================
+# AUTH DECORATOR FOR PROTECTED ROUTES
+# ========================================
 
 def requires_auth(f):
+    """
+    Decorator to protect admin routes
+    Validates Supabase JWT token from session or Authorization header
+    """
     @wraps(f)
-    def decorated(*args, **kwargs):
-        # Check for custom header first (used by frontend AJAX requests)
-        admin_key = request.headers.get('X-Admin-Key')
-        if admin_key:
-            valid_pass = os.environ.get('ADMIN_PASSWORD', 'admin')
-            if admin_key == valid_pass:
-                return f(*args, **kwargs)
+    def decorated_function(*args, **kwargs):
+        # Check for token in session (browser-based)
+        token = session.get('access_token')
         
-        # Fall back to HTTP Basic Auth (for routes like /delete_quote)
-        auth = request.authorization
-        if auth and check_auth(auth.username, auth.password):
+        # If not in session, check Authorization header (API calls)
+        if not token:
+            auth_header = request.headers.get('Authorization')
+            if auth_header and auth_header.startswith('Bearer '):
+                token = auth_header.replace('Bearer ', '')
+        
+        if not token:
+            # No token found - redirect to login for browser, return 401 for API
+            if request.is_json or request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication required', 'redirect': '/admin/login'}), 401
+            return redirect('/admin/login')
+        
+        try:
+            # Verify token with Supabase
+            user_response = supabase.auth.get_user(token)
+            
+            if not user_response or not user_response.user:
+                session.clear()
+                if request.is_json or request.path.startswith('/api/'):
+                    return jsonify({'error': 'Invalid or expired token', 'redirect': '/admin/login'}), 401
+                return redirect('/admin/login')
+            
+            # Token is valid - store user info in request context
+            request.current_user = user_response.user
             return f(*args, **kwargs)
-        
-        # Neither authentication method succeeded
-        return authenticate()
-    return decorated
+            
+        except Exception as e:
+            print(f"Auth error: {e}")
+            session.clear()
+            if request.is_json or request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication failed', 'redirect': '/admin/login'}), 401
+            return redirect('/admin/login')
+    
+    return decorated_function
 
 # --- DATABASE CONFIGURATION ---
 database_url = os.environ.get('DATABASE_URL')
@@ -1522,6 +1558,131 @@ def analyze_file():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
+# ========================================
+# AUTH ROUTES
+# ========================================
+
+@app.route('/admin/login')
+def admin_login():
+    """Admin login page"""
+    # If already logged in, redirect to dashboard
+    if session.get('access_token'):
+        return redirect('/admin/dashboard')
+    return render_template('admin_login.html')
+
+@app.route('/api/auth/login', methods=['POST'])
+def api_login():
+    """Handle login via Supabase"""
+    try:
+        data = request.get_json()
+        email = data.get('email')
+        password = data.get('password')
+        
+        if not email or not password:
+            return jsonify({'error': 'Email and password required'}), 400
+        
+        # Authenticate with Supabase
+        auth_response = supabase.auth.sign_in_with_password({
+            "email": email,
+            "password": password
+        })
+        
+        if auth_response.user:
+            # Store tokens in session
+            session.permanent = True
+            session['access_token'] = auth_response.session.access_token
+            session['refresh_token'] = auth_response.session.refresh_token
+            session['user_email'] = auth_response.user.email
+            
+            return jsonify({
+                'success': True,
+                'message': 'Login successful',
+                'redirect': '/admin/dashboard'
+            })
+        else:
+            return jsonify({'error': 'Invalid credentials'}), 401
+            
+    except Exception as e:
+        error_message = str(e)
+        # Handle common Supabase auth errors
+        if 'Invalid login credentials' in error_message:
+            return jsonify({'error': 'Invalid email or password'}), 401
+        elif 'Email not confirmed' in error_message:
+            return jsonify({'error': 'Please verify your email first'}), 401
+        else:
+            print(f"Login error: {e}")
+            return jsonify({'error': 'Login failed. Please try again.'}), 500
+
+@app.route('/api/auth/logout', methods=['POST'])
+def api_logout():
+    """Handle logout"""
+    try:
+        token = session.get('access_token')
+        if token:
+            # Sign out from Supabase
+            supabase.auth.sign_out()
+        
+        # Clear session
+        session.clear()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Logged out successfully',
+            'redirect': '/admin/login'
+        })
+    except Exception as e:
+        print(f"Logout error: {e}")
+        session.clear()  # Clear session anyway
+        return jsonify({
+            'success': True,
+            'redirect': '/admin/login'
+        })
+
+@app.route('/api/auth/check', methods=['GET'])
+def check_auth():
+    """Check if user is authenticated (for frontend to verify session)"""
+    token = session.get('access_token')
+    
+    if not token:
+        return jsonify({'authenticated': False}), 401
+    
+    try:
+        user_response = supabase.auth.get_user(token)
+        if user_response and user_response.user:
+            return jsonify({
+                'authenticated': True,
+                'user': {
+                    'email': user_response.user.email,
+                    'id': user_response.user.id
+                }
+            })
+        else:
+            session.clear()
+            return jsonify({'authenticated': False}), 401
+    except:
+        session.clear()
+        return jsonify({'authenticated': False}), 401
+
+# ========================================
+# ADMIN ROUTES (PROTECTED)
+# ========================================
+
+@app.route('/admin')
+def admin_redirect():
+    """Redirect /admin to /admin/dashboard"""
+    return redirect('/admin/dashboard')
+
+@app.route('/admin/dashboard')
+@requires_auth
+def admin_dashboard():
+    """Admin dashboard - protected route"""
+    user_email = session.get('user_email', 'Admin')
+    return render_template('admin_dashboard.html', user_email=user_email)
+
+# ========================================
+# DXF ANALYSIS ROUTE
+# ========================================
+
 @app.route('/analyze_dxf_file', methods=['POST'])
 def analyze_dxf_file_route():
     """Analyze uploaded DXF file"""
@@ -1580,7 +1741,6 @@ def debug_upload():
 
 # ========================================
 # SMART PRICING WITH INVENTORY INTEGRATION
-# Add these helper functions to your app.py
 # ========================================
 
 def check_material_availability(material, thickness, width_mm, height_mm):
@@ -1673,7 +1833,6 @@ def calculate_profit_margin(quoted_price, material_cost, cutting_time_minutes):
 
 # ========================================
 # UPDATED CALCULATE PRICE ROUTE
-# Replace your existing /calculate_price route
 # ========================================
 
 @app.route('/calculate_price', methods=['POST'])
@@ -1745,7 +1904,6 @@ def calculate_price():
 
 # ========================================
 # BULK PRICING WITH INVENTORY CHECK
-# Replace your existing /calculate_price route for bulk
 # ========================================
 
 @app.route('/calculate_bulk_prices', methods=['POST'])
@@ -1810,6 +1968,10 @@ def calculate_bulk_prices():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
 
+# ========================================
+# QUOTE MANAGEMENT ROUTES
+# ========================================
+
 @app.route('/save_quote', methods=['POST'])
 def save_quote():
     """Save a quote to database"""
@@ -1864,6 +2026,101 @@ def save_quote():
     except Exception as e:
         db.session.rollback()
         return jsonify({'success': False, 'error': str(e)})
+
+# =======================================
+# BULK QUOTE SAVING ROUTE
+# =======================================
+
+@app.route('/save_bulk_quote', methods=['POST'])
+def save_bulk_quote():
+    """Save a quote with multiple items"""
+    try:
+        data = request.get_json()
+        
+        # Generate quote number
+        today = datetime.now().strftime('%Y%m%d')
+        last_quote = Quote.query.filter(Quote.quote_number.like(f'Q{today}%')).order_by(Quote.id.desc()).first()
+        
+        if last_quote:
+            last_num = int(last_quote.quote_number[-3:])
+            new_num = last_num + 1
+        else:
+            new_num = 1
+        
+        quote_number = f"Q{today}{new_num:03d}"
+        
+        # Calculate total price from all items
+        items_data = data.get('items', [])
+        total_price = sum(float(item['price']) for item in items_data)
+        
+        # Use first item's details for main quote (for backward compatibility)
+        first_item = items_data[0] if items_data else {}
+        
+        # Create main quote
+        quote = Quote(
+            quote_number=quote_number,
+            customer_name=data.get('customer_name', ''),
+            customer_email=data.get('customer_email', ''),
+            customer_phone=data.get('customer_phone', ''),
+            customer_whatsapp=data.get('customer_whatsapp', ''),
+            material=first_item.get('material', ''),
+            thickness_mm=float(first_item.get('thickness', 0)),
+            width_mm=float(first_item.get('width', 0)),
+            height_mm=float(first_item.get('height', 0)),
+            num_letters=int(first_item.get('letters', 0)),
+            num_shapes=int(first_item.get('shapes', 1)),
+            complexity_score=int(first_item.get('complexity', 3)),
+            has_intricate_details=int(first_item.get('details', 0)),
+            cutting_type=first_item.get('cuttingType', ''),
+            cutting_time_minutes=float(first_item.get('time', 0)),
+            quantity=int(first_item.get('quantity', 1)),
+            rush_job=int(first_item.get('rush', 0)),
+            quoted_price=total_price,
+            notes=data.get('notes', '')
+        )
+        
+        db.session.add(quote)
+        db.session.flush()  # Get the quote.id
+        
+        # Create quote items
+        for item_data in items_data:
+            quote_item = QuoteItem(
+                quote_id=quote.id,
+                item_name=item_data.get('name', 'Item'),
+                material=item_data.get('material', ''),
+                thickness_mm=float(item_data.get('thickness', 0)),
+                width_mm=float(item_data.get('width', 0)),
+                height_mm=float(item_data.get('height', 0)),
+                num_letters=int(item_data.get('letters', 0)),
+                num_shapes=int(item_data.get('shapes', 1)),
+                complexity_score=int(item_data.get('complexity', 3)),
+                has_intricate_details=int(item_data.get('details', 0)),
+                cutting_type=item_data.get('cuttingType', ''),
+                cutting_time_minutes=float(item_data.get('time', 0)),
+                quantity=int(item_data.get('quantity', 1)),
+                rush_job=int(item_data.get('rush', 0)),
+                item_price=float(item_data.get('price', 0))
+            )
+            db.session.add(quote_item)
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'quote_number': quote_number,
+            'total_price': total_price,
+            'items_count': len(items_data),
+            'message': f'Bulk quote {quote_number} saved with {len(items_data)} items!'
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        import traceback
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'traceback': traceback.format_exc()
+        })
 
 @app.route('/get_quotes', methods=['GET'])
 def get_quotes():
@@ -2018,7 +2275,10 @@ _Generated by BrainGain Tech Pricing System_
         print(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)}), 500  
 
-# --- INVENTORY ROUTES ---
+# ========================================
+# INVENTORY MANAGEMENT ROUTES
+# ========================================
+
 @app.route('/api/inventory', methods=['GET'])
 def get_inventory():
     items = Inventory.query.all()
@@ -2112,6 +2372,10 @@ def delete_inventory(item_id):
         return jsonify({"status": "error", "message": "Item not found"}), 404
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+# ========================================
+# MODEL TRAINING ROUTES
+# ========================================
 
 @app.route('/add_training_job', methods=['POST'])
 @requires_auth
@@ -2321,6 +2585,10 @@ def retrain_model():
             'traceback': traceback.format_exc()
         })
 
+# =======================================
+# HEALTH CHECK ROUTE
+# =======================================
+
 @app.route('/health')
 @requires_auth
 def health():
@@ -2330,97 +2598,6 @@ def health():
         'model_loaded': model is not None,
         'company': 'BrainGain Tech Innovation Solutions'
     })
-
-@app.route('/save_bulk_quote', methods=['POST'])
-def save_bulk_quote():
-    """Save a quote with multiple items"""
-    try:
-        data = request.get_json()
-        
-        # Generate quote number
-        today = datetime.now().strftime('%Y%m%d')
-        last_quote = Quote.query.filter(Quote.quote_number.like(f'Q{today}%')).order_by(Quote.id.desc()).first()
-        
-        if last_quote:
-            last_num = int(last_quote.quote_number[-3:])
-            new_num = last_num + 1
-        else:
-            new_num = 1
-        
-        quote_number = f"Q{today}{new_num:03d}"
-        
-        # Calculate total price from all items
-        items_data = data.get('items', [])
-        total_price = sum(float(item['price']) for item in items_data)
-        
-        # Use first item's details for main quote (for backward compatibility)
-        first_item = items_data[0] if items_data else {}
-        
-        # Create main quote
-        quote = Quote(
-            quote_number=quote_number,
-            customer_name=data.get('customer_name', ''),
-            customer_email=data.get('customer_email', ''),
-            customer_phone=data.get('customer_phone', ''),
-            customer_whatsapp=data.get('customer_whatsapp', ''),
-            material=first_item.get('material', ''),
-            thickness_mm=float(first_item.get('thickness', 0)),
-            width_mm=float(first_item.get('width', 0)),
-            height_mm=float(first_item.get('height', 0)),
-            num_letters=int(first_item.get('letters', 0)),
-            num_shapes=int(first_item.get('shapes', 1)),
-            complexity_score=int(first_item.get('complexity', 3)),
-            has_intricate_details=int(first_item.get('details', 0)),
-            cutting_type=first_item.get('cuttingType', ''),
-            cutting_time_minutes=float(first_item.get('time', 0)),
-            quantity=int(first_item.get('quantity', 1)),
-            rush_job=int(first_item.get('rush', 0)),
-            quoted_price=total_price,
-            notes=data.get('notes', '')
-        )
-        
-        db.session.add(quote)
-        db.session.flush()  # Get the quote.id
-        
-        # Create quote items
-        for item_data in items_data:
-            quote_item = QuoteItem(
-                quote_id=quote.id,
-                item_name=item_data.get('name', 'Item'),
-                material=item_data.get('material', ''),
-                thickness_mm=float(item_data.get('thickness', 0)),
-                width_mm=float(item_data.get('width', 0)),
-                height_mm=float(item_data.get('height', 0)),
-                num_letters=int(item_data.get('letters', 0)),
-                num_shapes=int(item_data.get('shapes', 1)),
-                complexity_score=int(item_data.get('complexity', 3)),
-                has_intricate_details=int(item_data.get('details', 0)),
-                cutting_type=item_data.get('cuttingType', ''),
-                cutting_time_minutes=float(item_data.get('time', 0)),
-                quantity=int(item_data.get('quantity', 1)),
-                rush_job=int(item_data.get('rush', 0)),
-                item_price=float(item_data.get('price', 0))
-            )
-            db.session.add(quote_item)
-        
-        db.session.commit()
-        
-        return jsonify({
-            'success': True,
-            'quote_number': quote_number,
-            'total_price': total_price,
-            'items_count': len(items_data),
-            'message': f'Bulk quote {quote_number} saved with {len(items_data)} items!'
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        import traceback
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
 
 # ========================================
 # APPLICATION INITIALIZATION

@@ -8,13 +8,14 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
+    <div class="body-container">
     <div class="container">
     <div class="header">
         <img src="{{ url_for('static', filename='images/logo.png') }}" alt="BrainGain Tech" class="header-logo">
         <h1>CNC/Laser Cutting Price Quote</h1>
         <p>BrainGain Tech Innovation Solutions</p>
     </div>
-        
+
         <div class="tabs">
             <div class="tab active" onclick="showTab('upload')">
                 📤 Upload Design
@@ -25,17 +26,8 @@
             <div class="tab" onclick="showTab('bulk')">
                 📦 Bulk Order
             </div>
-            <div class="tab" onclick="showTab('inventory')">
-                🏭 Inventory
-            </div>
-            <div class="tab" onclick="showTab('quotes')">
-                📋 Saved Quotes
-            </div>
-            <div class="tab" onclick="showTab('addjob')">
-                ➕ Add Training Job
-            </div>
         </div>
-        
+
         <div class="content">
             <!-- UPLOAD TAB -->
             <div id="upload" class="tab-content active">
@@ -238,25 +230,6 @@
                 <button class="btn" onclick="calculatePrice()">Calculate Price</button>
             </div>
 
-            <!-- QUOTES TAB -->
-            <div id="quotes" class="tab-content">
-                <div class="row" style="margin-bottom: 20px;">
-                    <div class="form-group">
-                        <label>Search Quotes</label>
-                        <input type="text" id="searchQuotes" placeholder="Search by customer name or quote number..." onkeyup="searchQuotes()">
-                    </div>
-                </div>
-                
-                <div id="quotesLoading" class="loading">
-                    <div class="spinner"></div>
-                    <p style="margin-top: 15px;">Loading quotes...</p>
-                </div>
-                
-                <div id="quotesContainer">
-                    <p style="text-align: center; color: #999;">No quotes saved yet. Create a quote to get started!</p>
-                </div>
-            </div>
-            
             <!-- BULK ORDER TAB -->
          <div id="bulk" class="tab-content">
             <div class="info-box">
@@ -382,208 +355,6 @@
                     
                     <button class="btn" onclick="addItemToBulk()">➕ Add Item & Calculate Price</button>
                 </div>
-    
-               <!-- INVENTORY TAB -->
-               <div id="inventory" class="tab-content content">
-                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-direction: column; gap: 10px; ">
-                       <h2 style="font-size: 30px;">Material Inventory</h2>
-                       <button onclick="toggleInventoryForm()" class="btn" style="padding: 10px 20px; font-size: 0.9em;">
-                           + Add Stock
-                       </button>
-                   </div>
-               
-                   <div id="inventoryForm" style="display: none; background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #ddd;">
-                      <h3 style="margin-bottom: 15px;">Manage Stock</h3>
-                      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                      <div class="form-group">
-                      <label>Material Name</label>
-                       <select id="inv_material">
-                          <option value="Acrylic">Acrylic</option>
-                          <option value="Plywood">Plywood</option>
-                          <option value="MDF">MDF</option>
-                          <option value="Aluminum">Aluminum</option>
-                       </select>
-                   </div>
-                    <div class="form-group">
-                        <label>Color</label>
-                        <input type="text" id="inv_color" placeholder="e.g. Red, Clear, Black">
-                    </div>
-                    <div class="form-group">
-                        <label>Thickness (mm)</label>
-                        <input type="number" id="inv_thickness" step="0.1" placeholder="e.g. 3.0">
-                    </div>
-                    <div class="form-group">
-                        <label>Price per Sq. Ft (₦)</label>
-                        <input type="number" id="inv_price" placeholder="e.g. 1800">
-                        <small style="color: #666;">You set this manually</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Sheet Width (mm)</label>
-                        <input type="number" id="inv_width" placeholder="e.g. 1220">
-                    </div>
-                    <div class="form-group">
-                        <label>Sheet Height (mm)</label>
-                        <input type="number" id="inv_height" placeholder="e.g. 2440">
-                    </div>
-                    <div class="form-group">
-                        <label>Stock Change (+/-)</label>
-                        <input type="number" id="inv_quantity" placeholder="e.g. 10 (In) or -5 (Out)">
-                    </div>
-                    <div class="form-group">
-                        <label>Note (Optional)</label>
-                        <input type="text" id="inv_note" placeholder="e.g. New Shipment">
-                    </div>
-                </div>
-                <div style="margin-top: 15px; text-align: right;">
-                    <button onclick="submitInventory()" class="btn" style="padding: 10px 20px;">Update Stock</button>
-                </div>
-            </div>
-       
-            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px;">
-                <thead style="background: #f1f1f1; border-bottom: 2px solid #ddd;">
-                    <tr>
-                        <th style="padding: 12px; text-align: left;">Material</th>
-                        <th style="padding: 12px; text-align: left;">Color</th>
-                        <th style="padding: 12px; text-align: left;">Details</th>
-                        <th style="padding: 12px; text-align: center;">Stock Left</th>
-                        <th style="padding: 12px; text-align: right;">Price / Sq.Ft</th>
-                        <th style="padding: 12px; text-align: center;">History</th>
-                        <th style="padding: 12px; text-align: center;">Action</th>
-                    </tr>
-                </thead>
-                <tbody id="inventoryTableBody">
-                    </tbody>
-            </table>
-            
-            <div id="historyModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:20px; box-shadow:0 0 20px rgba(0,0,0,0.2); z-index:1000; width: 400px; border-radius: 8px;">
-                <h3>Stock History</h3>
-                <ul id="historyList" style="max-height: 300px; overflow-y: auto; padding-left: 0; list-style: none;"></ul>
-                <button onclick="document.getElementById('historyModal').style.display='none'" style="margin-top:10px; padding:5px 10px;">Close</button>
-             </div>
-           </div>
-
-                <!-- ADD JOB TAB -->
-                <div id="addjob" class="tab-content">
-                    <div class="info-box">
-                        <strong>📊 Training Data:</strong> Add completed jobs here to improve pricing accuracy. The more jobs you add, the better the predictions!
-                    </div>
-                    
-                    <div style="background: #FFF8F0; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center;">
-                        <div style="font-size: 2em; font-weight: bold; color: #E89D3C;" id="jobCount">50</div>
-                        <div style="color: #9B9B9B; margin-top: 5px;">Total Training Jobs</div>
-                        <div style="margin-top: 10px;">
-                            <span style="color: #666;">Model Accuracy (R²): </span>
-                            <strong id="modelAccuracy">0.685</strong>
-                        </div>
-                    </div>
-                    
-                    <h3 style="margin-bottom: 20px;">Add Completed Job</h3>
-                    
-                    <div class="row">
-                        <div class="form-group">
-                            <label>Material *</label>
-                            <select id="jobMaterial">
-                                <option value="">Select material...</option>
-                                <option value="Acrylic">Acrylic</option>
-                                <option value="Wood">Wood</option>
-                                <option value="Metal">Metal</option>
-                                <option value="MDF">MDF</option>
-                                <option value="Plywood">Plywood</option>
-                                <option value="Foam">Foam</option>
-                                <option value="Cardboard">Cardboard</option>
-                                <option value="ACP">ACP</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Thickness (mm) *</label>
-                            <input type="number" id="jobThickness" placeholder="e.g., 6" step="0.1">
-                        </div>
-                    </div>
-                    
-                    <div class="row">
-                        <div class="form-group">
-                            <label>Width (mm) *</label>
-                            <input type="number" id="jobWidth" placeholder="e.g., 500">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Height (mm) *</label>
-                            <input type="number" id="jobHeight" placeholder="e.g., 300">
-                        </div>
-                    </div>
-                    
-                    <div class="row">
-                        <div class="form-group">
-                            <label>Number of Letters</label>
-                            <input type="number" id="jobLetters" value="0" min="0">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Number of Shapes</label>
-                            <input type="number" id="jobShapes" value="1" min="1">
-                        </div>
-                    </div>
-                    
-                    <div class="row">
-                        <div class="form-group">
-                            <label>Complexity (1-5)</label>
-                            <select id="jobComplexity">
-                                <option value="1">1 - Very Simple</option>
-                                <option value="2">2 - Simple</option>
-                                <option value="3" selected>3 - Moderate</option>
-                                <option value="4">4 - Complex</option>
-                                <option value="5">5 - Very Complex</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Cutting Time (minutes) *</label>
-                            <input type="number" id="jobTime" placeholder="e.g., 30" step="0.1">
-                        </div>
-                    </div>
-                    
-                    <div class="row">
-                        <div class="form-group">
-                            <label>Cutting Type *</label>
-                            <select id="jobCuttingType">
-                                <option value="Laser Cutting">Laser Cutting</option>
-                                <option value="CNC Router">CNC Router</option>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Quantity</label>
-                            <input type="number" id="jobQuantity" value="1" min="1">
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Final Price Charged (₦) *</label>
-                        <input type="number" id="jobPrice" placeholder="e.g., 15000" step="0.01">
-                    </div>
-                    
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="jobDetails">
-                        <label for="jobDetails" style="margin: 0;">Has intricate details</label>
-                    </div>
-                    
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="jobRush">
-                        <label for="jobRush" style="margin: 0;">⚡ Was a rush job</label>
-                    </div>
-                    
-                    <button class="btn" onclick="addTrainingJob()">➕ Add Job to Training Data</button>
-                    
-                    <div style="margin-top: 30px; padding-top: 30px; border-top: 2px solid #e0e0e0;">
-                        <h3 style="margin-bottom: 15px;">🔄 Retrain Model</h3>
-                        <p style="color: #666; margin-bottom: 15px;">After adding several new jobs, retrain the model to improve accuracy.</p>
-                        <button class="btn" onclick="retrainModel()" style="background: linear-gradient(135deg, #9B9B9B 0%, #7A7A7A 100%);">
-                            🔄 Retrain Model Now
-                        </button>
-                        <div id="retrainStatus" style="margin-top: 15px; text-align: center;"></div>
-                    </div>
-                </div>
         </div>
 
         <!-- RESULT BOX -->
@@ -660,7 +431,20 @@
             </div>
         </div>
     </div>
-    
+    </div>
+    </div>
+
+    <div class="footer">
+        <p style="color: #666; margin: 0;">
+            BrainGain Tech Innovation Solutions &copy; 2026
+        </p>
+        <p style="margin: 10px 0 0 0;">
+            <a href="/admin/login" style="color: #E89D3C; text-decoration: none; font-size: 0.9em;">
+                Admin Access
+            </a>
+        </p>
+    </div>
+
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
 </html>
