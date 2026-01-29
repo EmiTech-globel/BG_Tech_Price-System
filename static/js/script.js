@@ -331,6 +331,7 @@ async function displayDxfMultiItemResults(result) {
             name: item.name,
             material: '',
             thickness: 0,
+            color: '',
             width: item.width_mm,
             height: item.height_mm,
             letters: item.num_letters,
@@ -341,7 +342,8 @@ async function displayDxfMultiItemResults(result) {
             time: item.cutting_time_minutes,
             quantity: 1,
             rush: 0,
-            price: 0
+            price: 0,
+            inventory: null
         }));
         
         updateBulkItemsDisplay();
@@ -368,12 +370,13 @@ function displayExtractedInfo(data) {
 async function calculateFromUpload() {
     const material = document.getElementById('uploadMaterial').value;
     const thickness = document.getElementById('uploadThickness').value;
+    const color = document.getElementById('uploadColor').value;
     const cuttingType = document.getElementById('uploadCuttingType').value;
     const quantity = document.getElementById('uploadQuantity').value;
     const rush = document.getElementById('uploadRush').checked ? 1 : 0;
     
-    if (!material || !thickness) {
-        showNotification('Please select material and thickness!', 'warning');
+    if (!material || !thickness || !color) {
+        showNotification('Please select material, thickness, and color!', 'warning');
         return;
     }
     
@@ -385,6 +388,7 @@ async function calculateFromUpload() {
     const jobData = {
         material: material,
         thickness: parseFloat(thickness),
+        color: color,  // NEW
         letters: extractedData.num_letters,
         shapes: extractedData.num_shapes,
         complexity: extractedData.complexity_score,
@@ -403,6 +407,7 @@ async function calculateFromUpload() {
 async function calculatePrice() {
     const material = document.getElementById('material').value;
     const thickness = document.getElementById('thickness').value;
+    const color = document.getElementById('manualColor').value;
     const width = document.getElementById('width').value;
     const height = document.getElementById('height').value;
     const time = document.getElementById('time').value;
@@ -414,14 +419,15 @@ async function calculatePrice() {
     const details = document.getElementById('details').checked ? 1 : 0;
     const rush = document.getElementById('rush').checked ? 1 : 0;
     
-    if (!material || !thickness || !width || !height || !time) {
-        showNotification('Please fill in all required fields (marked with *)!', 'warning');
+    if (!material || !thickness || !color || !width || !height || !time) {
+        showNotification('Please fill in all required fields (including color)!', 'warning');
         return;
     }
     
     const jobData = {
         material: material,
         thickness: parseFloat(thickness),
+        color: color,  // NEW
         letters: parseInt(letters),
         shapes: parseInt(shapes),
         complexity: parseInt(complexity),
@@ -436,6 +442,7 @@ async function calculatePrice() {
     
     await sendPriceRequest(jobData);
 }
+
 
 // ========================================
 // UPDATED PRICE REQUEST FUNCTION
@@ -957,21 +964,24 @@ document.addEventListener('DOMContentLoaded', function() {
 async function addItemToBulk() {
     const material = document.getElementById('bulkMaterial').value;
     const thickness = document.getElementById('bulkThickness').value;
+    const color = document.getElementById('bulkColor').value;
     const width = document.getElementById('bulkWidth').value;
     const height = document.getElementById('bulkHeight').value;
     const time = document.getElementById('bulkTime').value;
     
     if (!material || !thickness || !width || !height || !time) {
-        showNotification('Please fill in all required fields!', 'warning');
+        showNotification('Please fill in all required fields (Material, Thickness, Dimensions, and Time)!', 'warning');
         return;
     }
     
     const itemName = document.getElementById('bulkItemName').value || `Item ${bulkItemCounter + 1}`;
     
     const itemData = {
+        id: bulkItemCounter++,
         name: itemName,
         material: material,
         thickness: parseFloat(thickness),
+        color: color || '',
         letters: parseInt(document.getElementById('bulkLetters').value),
         shapes: parseInt(document.getElementById('bulkShapes').value),
         complexity: parseInt(document.getElementById('bulkComplexity').value),
@@ -981,7 +991,9 @@ async function addItemToBulk() {
         cuttingType: document.getElementById('bulkCuttingType').value,
         time: parseFloat(time),
         quantity: parseInt(document.getElementById('bulkQuantity').value),
-        rush: document.getElementById('bulkRush').checked ? 1 : 0
+        rush: document.getElementById('bulkRush').checked ? 1 : 0,
+        price: 0,
+        inventory: null
     };
     
     try {
@@ -995,7 +1007,7 @@ async function addItemToBulk() {
         
         if (result.success) {
             itemData.price = result.price;
-            itemData.id = bulkItemCounter++;
+            itemData.inventory = result.inventory;
             bulkItems.push(itemData);
             updateBulkItemsDisplay();
             clearBulkForm();
@@ -1024,9 +1036,9 @@ async function updateBulkItemMaterial(itemId, material) {
     // Re-render immediately so the selected values show right away
     updateBulkItemsDisplay();
 
-    // If thickness is already selected, trigger price calc
+    // If thickness is already selected, load colors
     if (item.material && item.thickness) {
-        await calculateBulkItemPrice(itemId);
+        await loadBulkItemColors(itemId);
     }
 }
 
@@ -1039,9 +1051,73 @@ async function updateBulkItemThickness(itemId, thickness) {
     // Re-render immediately so the selected values show right away
     updateBulkItemsDisplay();
 
-    // If material is already selected, trigger price calc
+    // If material is already selected, load colors
+    if (item.material && item.thickness) {
+        await loadBulkItemColors(itemId);
+    }
+}
+
+// Update color for a bulk item (async + re-render)
+async function updateBulkItemColor(itemId, color) {
+    const item = bulkItems.find(i => i.id === itemId);
+    if (!item) return;
+
+    item.color = color || '';
+    // Re-render immediately so the selected values show right away
+    updateBulkItemsDisplay();
+
+    // Trigger price recalculation if we have material and thickness
     if (item.material && item.thickness) {
         await calculateBulkItemPrice(itemId);
+    }
+}
+
+// Load available colors for a bulk item
+async function loadBulkItemColors(itemId) {
+    const item = bulkItems.find(i => i.id === itemId);
+    if (!item || !item.material || !item.thickness) return;
+
+    try {
+        const response = await fetch(`/api/inventory/colors?material=${encodeURIComponent(item.material)}&thickness=${item.thickness}`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const result = await response.json();
+        const colorSelect = document.getElementById(`colorSelect_${item.id}`);
+        
+        if (!colorSelect) return;  // Element not in DOM yet
+        
+        if (result.success && result.colors.length > 0) {
+            // Clear loading message
+            colorSelect.innerHTML = '<option value="">Select color...</option>';
+            
+            // Add color options
+            result.colors.forEach(color => {
+                const option = document.createElement('option');
+                option.value = color.color;
+                
+                // Show stock status in option text
+                if (color.in_stock) {
+                    option.textContent = `${color.color} (${color.stock} sheets)`;
+                } else {
+                    option.textContent = `${color.color} (Out of stock)`;
+                    option.disabled = true;
+                    option.style.color = '#999';
+                }
+                
+                colorSelect.appendChild(option);
+            });
+        } else {
+            colorSelect.innerHTML = '<option value="">No colors available</option>';
+        }
+    } catch (error) {
+        console.error('Error loading colors for bulk item:', error);
+        const colorSelect = document.getElementById(`colorSelect_${item.id}`);
+        if (colorSelect) {
+            colorSelect.innerHTML = '<option value="">Error loading colors</option>';
+        }
     }
 }
 
@@ -1051,11 +1127,13 @@ async function calculateBulkItemPrice(itemId) {
     if (!item) return;
 
     // Require both
+
     if (!item.material || !item.thickness) return;
 
     const jobData = {
         material: item.material,
         thickness: item.thickness,
+        color: item.color || '',
         letters: item.letters,
         shapes: item.shapes,
         complexity: item.complexity,
@@ -1185,6 +1263,14 @@ function updateBulkItemsDisplay() {
                         <option value="12" ${currentThickness === '12' ? 'selected' : ''}>12mm</option>
                     </select>
                 </div>
+                ${item.material && item.thickness ? `
+                <div style="margin-top: 10px;">
+                    <strong>Select Color:</strong>
+                    <select onchange="updateBulkItemColor(${item.id}, this.value)" class="form-control-sm" id="colorSelect_${item.id}">
+                        <option value="">Loading colors...</option>
+                    </select>
+                </div>
+                ` : ''}
             </div>
             ` : ''}
 
@@ -1645,46 +1731,38 @@ function toggleInventoryForm() {
 
 // 2. Load Inventory from Database
 function loadInventory() {
-    const tbody = document.getElementById('inventoryTableBody');
-    if (!tbody) {
-        console.error('Inventory table body not found in DOM');
-        return;
-    }
-    
-    // Show loading state
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px;">Loading inventory...</td></tr>';
-    
     fetch('/api/inventory')
-        .then(res => {
-            if (!res.ok) {
-                throw new Error('Failed to load inventory');
-            }
-            return res.json();
-        })
+        .then(res => res.json())
         .then(data => {
+            const tbody = document.getElementById('inventoryTableBody');
             tbody.innerHTML = '';
             
             if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: #999;">No inventory items found. Add your first item using the "Add Stock" button above.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding: 20px;">No inventory yet. Add some stock!</td></tr>';
                 return;
             }
-            
+
             data.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.style.borderBottom = "1px solid #eee";
                 
-                const priceFormatted = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(item.price_sq_ft);
+                // Format prices
+                const priceSheet = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(item.price_sheet || 0);
+                const priceSqFt = new Intl.NumberFormat('en-NG', { style: 'currency', currency: 'NGN' }).format(item.price_sq_ft || 0);
 
                 tr.innerHTML = `
-                    <td style="padding: 12px;"><strong>${item.material}</strong></td>
+                    <td style="padding: 12px;"><strong>${item.material}</strong> (${item.thickness}mm)</td>
                     <td style="padding: 12px;">${item.color}</td>
-                    <td style="padding: 12px;">${item.thickness}mm (${item.size})</td>
-                    <td style="padding: 12px; text-align: center; font-weight: bold; color: ${item.stock < 5 ? 'red' : 'green'}">
-                        ${item.stock}
-                    </td>
-                    <td style="padding: 12px; text-align: right;">${priceFormatted}</td>
+                    <td style="padding: 12px;">${item.size}</td>
                     <td style="padding: 12px; text-align: center;">
-                        <button onclick="viewHistory(${item.id})" style="cursor: pointer;">📜</button>
+                        <span style="background: ${item.stock < 5 ? '#ffebee' : '#e8f5e9'}; color: ${item.stock < 5 ? '#c62828' : '#2e7d32'}; padding: 4px 8px; border-radius: 12px; font-weight: bold;">
+                            ${item.stock}
+                        </span>
+                    </td>
+                    <td style="padding: 12px; text-align: right;">${priceSheet}</td>
+                    <td style="padding: 12px; text-align: right;">${priceSqFt}</td>
+                    <td style="padding: 12px; text-align: center;">
+                        <button onclick="viewHistory(${item.id})" style="cursor: pointer; background: none; border: none;">📜</button>
                     </td>
                     <td style="padding: 12px; text-align: center;">
                         <button onclick="deleteInventory(${item.id})" style="color: red; border: none; background: none; cursor: pointer;">🗑️</button>
@@ -1693,10 +1771,7 @@ function loadInventory() {
                 tbody.appendChild(tr);
             });
         })
-        .catch(error => {
-            console.error('Error loading inventory:', error);
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 20px; color: #d9534f;">Error loading inventory. Please try again.</td></tr>';
-        });
+        .catch(err => console.error('Error loading inventory:', err));
 }
 
 // View Inventory History
@@ -1748,9 +1823,7 @@ async function viewHistory(id) {
     });
 }
 
-// 3. Submit New Stock
 async function submitInventory() {
-    // No password needed - backend already requires authentication
     const data = {
         material: document.getElementById('inv_material').value,
         color: document.getElementById('inv_color').value,
@@ -1758,30 +1831,47 @@ async function submitInventory() {
         width: document.getElementById('inv_width').value,
         height: document.getElementById('inv_height').value,
         quantity: document.getElementById('inv_quantity').value,
+        price_sheet: document.getElementById('inv_price_sheet').value,
         price_sq_ft: document.getElementById('inv_price').value,
         note: document.getElementById('inv_note').value
     };
 
-    fetch('/api/inventory/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-    })
-    .then(res => {
-        if (!res.ok) {
-            if (res.status === 401) {
-                showNotification('Authentication required. Please login again.', 'error');
-                window.location.href = '/admin/login';
-                return;
-            }
-            return res.json().then(err => { throw new Error(err.message || 'Failed to update inventory'); });
-        }
-        return res.json();
-    })
-    .then(result => {
+    // Validation
+    if (!data.material || !data.color || !data.thickness || !data.width || !data.height || !data.price_sheet) {
+        showNotification("Please fill in all required fields (marked with *)", "error");
+        return;
+    }
+    
+    // Auto-calculate price_sq_ft if not provided
+    if (!data.price_sq_ft || parseFloat(data.price_sq_ft) === 0) {
+        const width_mm = parseFloat(data.width);
+        const height_mm = parseFloat(data.height);
+        const price_sheet = parseFloat(data.price_sheet);
+        
+        // Calculate sheet area in sq ft
+        const area_sq_mm = width_mm * height_mm;
+        const area_sq_ft = area_sq_mm / 92903; // Convert mm² to sq ft
+        
+        // Calculate price per sq ft
+        data.price_sq_ft = (price_sheet / area_sq_ft).toFixed(2);
+        
+        console.log(`Auto-calculated price/sq ft: ₦${data.price_sq_ft}`);
+    }
+
+    try {
+        const response = await fetch('/api/inventory/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        
+        const result = await response.json();
+        
         if (result.status === 'success') {
-            showNotification("Stock Updated", "success");
+            showNotification("✅ Stock Updated Successfully!", "success");
+            toggleInventoryForm();
             loadInventory();
+            
             // Clear form
             document.getElementById('inv_material').value = '';
             document.getElementById('inv_color').value = '';
@@ -1789,17 +1879,15 @@ async function submitInventory() {
             document.getElementById('inv_width').value = '';
             document.getElementById('inv_height').value = '';
             document.getElementById('inv_quantity').value = '';
+            document.getElementById('inv_price_sheet').value = '';
             document.getElementById('inv_price').value = '';
             document.getElementById('inv_note').value = '';
-            toggleInventoryForm(); // Hide form after successful submission
         } else {
             showNotification(result.message, "error");
         }
-    })
-    .catch(error => {
-        console.error('Error updating inventory:', error);
-        showNotification(error.message || 'Failed to update inventory', 'error');
-    });
+    } catch (error) {
+        showNotification("Server error: " + error.message, "error");
+    }
 }
 
 // 4. Delete Item
@@ -1845,4 +1933,97 @@ async function deleteInventory(id) {
         console.error('Error deleting inventory:', error);
         showNotification(error.message || 'Failed to delete inventory item', 'error');
     });
+}
+
+// ========================================
+// COLOR SELECTOR FUNCTIONS
+// ========================================
+
+/**
+ * Load available colors for selected material and thickness
+ * @param {string} context - 'upload', 'manual', or 'bulk'
+ */
+async function loadColorsForMaterial(context) {
+    let material, thickness, colorSelect, helpText;
+    
+    // Get form fields based on context
+    if (context === 'upload') {
+        material = document.getElementById('uploadMaterial').value;
+        thickness = document.getElementById('uploadThickness').value;
+        colorSelect = document.getElementById('uploadColor');
+        helpText = document.getElementById('uploadColorHelp');
+    } else if (context === 'manual') {
+        material = document.getElementById('material').value;
+        thickness = document.getElementById('thickness').value;
+        colorSelect = document.getElementById('manualColor');
+        helpText = document.getElementById('manualColorHelp');
+    } else if (context === 'bulk') {
+        material = document.getElementById('bulkMaterial').value;
+        thickness = document.getElementById('bulkThickness').value;
+        colorSelect = document.getElementById('bulkColor');
+        helpText = document.getElementById('bulkColorHelp');
+    }
+    
+    // Clear previous options
+    colorSelect.innerHTML = '<option value="">Loading colors...</option>';
+    if (helpText) helpText.textContent = '';
+    
+    // Validate inputs
+    if (!material || !thickness) {
+        colorSelect.innerHTML = '<option value="">Select material and thickness first...</option>';
+        return;
+    }
+    
+    try {
+        // Fetch available colors
+        const response = await fetch(`/api/inventory/colors?material=${encodeURIComponent(material)}&thickness=${thickness}`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.success && result.colors.length > 0) {
+            // Clear loading message
+            colorSelect.innerHTML = '<option value="">Select color...</option>';
+            
+            // Add color options
+            result.colors.forEach(color => {
+                const option = document.createElement('option');
+                option.value = color.color;
+                
+                // Show stock status in option text
+                if (color.in_stock) {
+                    option.textContent = `${color.color} (${color.stock} sheets available)`;
+                } else {
+                    option.textContent = `${color.color} (Out of stock)`;
+                    option.disabled = true;
+                    option.style.color = '#999';
+                }
+                
+                colorSelect.appendChild(option);
+            });
+            
+            // Update help text
+            if (helpText) {
+                const inStockCount = result.colors.filter(c => c.in_stock).length;
+                helpText.textContent = `${inStockCount} color(s) available in stock`;
+                helpText.style.color = inStockCount > 0 ? '#28a745' : '#dc3545';
+            }
+        } else {
+            colorSelect.innerHTML = '<option value="">No colors available for this material</option>';
+            if (helpText) {
+                helpText.textContent = '⚠️ This material is not in inventory. Add it first.';
+                helpText.style.color = '#ffc107';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading colors:', error);
+        colorSelect.innerHTML = '<option value="">Error loading colors</option>';
+        if (helpText) {
+            helpText.textContent = `❌ Error: ${error.message || 'Failed to load colors'}`;
+            helpText.style.color = '#dc3545';
+        }
+    }
 }

@@ -78,3 +78,6 @@ htmlcov/
 *.bak
 *.backup
 *~
+
+# Other
+GEMINI.md

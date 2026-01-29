@@ -83,7 +83,7 @@
                 <div class="row" style="margin-top: 20px;">
                     <div class="form-group">
                         <label>Material *</label>
-                        <select id="uploadMaterial">
+                        <select id="uploadMaterial" onchange="loadColorsForMaterial('upload')">
                             <option value="">Select material...</option>
                             <option value="Acrylic">Acrylic</option>
                             <option value="Wood">Wood</option>
@@ -98,7 +98,7 @@
                     
                     <div class="form-group">
                         <label>Thickness (mm) *</label>
-                        <select id="uploadThickness">
+                        <select id="uploadThickness" onchange="loadColorsForMaterial('upload')">
                             <option value="">Select thickness...</option>
                             <option value="1.5">1.5mm</option>
                             <option value="3">3mm</option>
@@ -113,7 +113,15 @@
                     </div>
                 </div>
                 
-                <div class="row">
+                <div class="row" style="margin-top: 10px;">
+                    <div class="form-group">
+                        <label>Color *</label>
+                        <select id="uploadColor">
+                            <option value="">Select material and thickness first...</option>
+                        </select>
+                        <small id="uploadColorHelp" style="display: block; margin-top: 5px; color: #666;"></small>
+                    </div>
+                    
                     <div class="form-group">
                         <label>Cutting Type</label>
                         <select id="uploadCuttingType">
@@ -121,7 +129,9 @@
                             <option value="CNC Router">CNC Router</option>
                         </select>
                     </div>
-                    
+                </div>
+                
+                <div class="row">
                     <div class="form-group">
                         <label>Quantity</label>
                         <input type="number" id="uploadQuantity" value="1" min="1">
@@ -141,7 +151,7 @@
                 <div class="row">
                     <div class="form-group">
                         <label>Material *</label>
-                        <select id="material">
+                        <select id="material" onchange="loadColorsForMaterial('manual')">
                             <option value="">Select material...</option>
                             <option value="Acrylic">Acrylic</option>
                             <option value="Wood">Wood</option>
@@ -156,35 +166,43 @@
                     
                     <div class="form-group">
                         <label>Thickness (mm) *</label>
-                        <input type="number" id="thickness" placeholder="e.g., 6" step="0.1">
+                        <input type="number" id="thickness" placeholder="e.g., 6" step="0.1" onchange="loadColorsForMaterial('manual')">
                     </div>
                 </div>
                 
                 <div class="row">
+                    <div class="form-group">
+                        <label>Color *</label>
+                        <select id="manualColor">
+                            <option value="">Select material and thickness first...</option>
+                        </select>
+                        <small id="manualColorHelp" style="display: block; margin-top: 5px; color: #666;"></small>
+                    </div>
+                    
                     <div class="form-group">
                         <label>Width (mm) *</label>
                         <input type="number" id="width" placeholder="e.g., 500">
                     </div>
-                    
+                </div>
+
+                <div class="row">
                     <div class="form-group">
                         <label>Height (mm) *</label>
                         <input type="number" id="height" placeholder="e.g., 300">
                     </div>
-                </div>
-                
-                <div class="row">
+
                     <div class="form-group">
                         <label>Number of Letters</label>
                         <input type="number" id="letters" value="0" min="0">
                     </div>
-                    
+                </div>
+                
+                <div class="row">
                     <div class="form-group">
                         <label>Number of Shapes</label>
                         <input type="number" id="shapes" value="1" min="1">
                     </div>
-                </div>
-                
-                <div class="row">
+
                     <div class="form-group">
                         <label>Complexity (1-5)</label>
                         <select id="complexity">
@@ -195,14 +213,14 @@
                             <option value="5">5 - Very Complex</option>
                         </select>
                     </div>
-                    
+                </div>
+                
+                <div class="row">
                     <div class="form-group">
                         <label>Cutting Time (minutes) *</label>
                         <input type="number" id="time" placeholder="e.g., 30" step="0.1">
                     </div>
-                </div>
-                
-                <div class="row">
+
                     <div class="form-group">
                         <label>Cutting Type</label>
                         <select id="cuttingType">
@@ -210,7 +228,9 @@
                             <option value="CNC Router">CNC Router</option>
                         </select>
                     </div>
-                    
+                </div>
+                
+                <div class="row">
                     <div class="form-group">
                         <label>Quantity</label>
                         <input type="number" id="quantity" value="1" min="1">
@@ -267,7 +287,7 @@
                     <div class="row">
                         <div class="form-group">
                             <label>Material *</label>
-                            <select id="bulkMaterial">
+                            <select id="bulkMaterial" onchange="loadColorsForMaterial('bulk')">
                                 <option value="">Select material...</option>
                                 <option value="Acrylic">Acrylic</option>
                                 <option value="Wood">Wood</option>
@@ -282,35 +302,43 @@
                         
                         <div class="form-group">
                             <label>Thickness (mm) *</label>
-                            <input type="number" id="bulkThickness" placeholder="e.g., 6" step="0.1">
+                            <input type="number" id="bulkThickness" placeholder="e.g., 6" step="0.1" onchange="loadColorsForMaterial('bulk')">
                         </div>
                     </div>
                     
                     <div class="row">
+                        <div class="form-group">
+                            <label>Color *</label>
+                            <select id="bulkColor">
+                                <option value="">Select material and thickness first...</option>
+                            </select>
+                            <small id="bulkColorHelp" style="display: block; margin-top: 5px; color: #666;"></small>
+                        </div>
+                        
                         <div class="form-group">
                             <label>Width (mm) *</label>
                             <input type="number" id="bulkWidth" placeholder="e.g., 500">
                         </div>
-                        
+                    </div>
+                    
+                    <div class="row">
                         <div class="form-group">
                             <label>Height (mm) *</label>
                             <input type="number" id="bulkHeight" placeholder="e.g., 300">
                         </div>
-                    </div>
-                    
-                    <div class="row">
+
                         <div class="form-group">
                             <label>Number of Letters</label>
                             <input type="number" id="bulkLetters" value="0" min="0">
                         </div>
-                        
+                    </div>
+                    
+                    <div class="row">
                         <div class="form-group">
                             <label>Number of Shapes</label>
                             <input type="number" id="bulkShapes" value="1" min="1">
                         </div>
-                    </div>
-                    
-                    <div class="row">
+
                         <div class="form-group">
                             <label>Complexity (1-5)</label>
                             <select id="bulkComplexity">
@@ -321,14 +349,14 @@
                                 <option value="5">5 - Very Complex</option>
                             </select>
                         </div>
-                        
+                    </div>
+                    
+                    <div class="row">
                         <div class="form-group">
                             <label>Cutting Time (minutes) *</label>
                             <input type="number" id="bulkTime" placeholder="e.g., 30" step="0.1">
                         </div>
-                    </div>
-                    
-                    <div class="row">
+
                         <div class="form-group">
                             <label>Cutting Type</label>
                             <select id="bulkCuttingType">
@@ -336,7 +364,9 @@
                                 <option value="CNC Router">CNC Router</option>
                             </select>
                         </div>
-                        
+                    </div>
+                    
+                    <div class="row">
                         <div class="form-group">
                             <label>Quantity</label>
                             <input type="number" id="bulkQuantity" value="1" min="1">

@@ -73,66 +73,91 @@
                        </button>
                    </div>
                
-                   <div id="inventoryForm" style="display: none; background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #ddd;">
-                      <h3 style="margin-bottom: 15px;">Manage Stock</h3>
-                      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                      <div class="form-group">
-                      <label>Material Name</label>
-                       <select id="inv_material">
-                          <option value="Acrylic">Acrylic</option>
-                          <option value="Plywood">Plywood</option>
-                          <option value="MDF">MDF</option>
-                          <option value="Aluminum">Aluminum</option>
-                       </select>
-                   </div>
+            <div id="inventoryForm" style="display: none; background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #ddd;">
+                <h3 style="margin-bottom: 15px;">Manage Stock</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div class="form-group">
-                        <label>Color</label>
-                        <input type="text" id="inv_color" placeholder="e.g. Red, Clear, Black">
+                        <label>Material Name *</label>
+                        <select id="inv_material">
+                            <option value="">Select material...</option>
+                            <option value="Acrylic">Acrylic</option>
+                            <option value="Plywood">Plywood</option>
+                            <option value="MDF">MDF</option>
+                            <option value="Aluminum">Aluminum</option>
+                            <option value="ACP">ACP</option>
+                            <option value="Wood">Wood</option>
+                            <option value="Metal">Metal</option>
+                        </select>
                     </div>
+                    
                     <div class="form-group">
-                        <label>Thickness (mm)</label>
+                        <label>Color *</label>
+                        <input type="text" id="inv_color" placeholder="e.g. Red, Clear, Black, Natural">
+                        <small style="color: #666;">Required - helps match customer orders</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Thickness (mm) *</label>
                         <input type="number" id="inv_thickness" step="0.1" placeholder="e.g. 3.0">
                     </div>
+                    
                     <div class="form-group">
-                        <label>Price per Sq. Ft (₦)</label>
-                        <input type="number" id="inv_price" placeholder="e.g. 1800">
-                        <small style="color: #666;">You set this manually</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Sheet Width (mm)</label>
+                        <label>Sheet Width (mm) *</label>
                         <input type="number" id="inv_width" placeholder="e.g. 1220">
                     </div>
+                    
                     <div class="form-group">
-                        <label>Sheet Height (mm)</label>
+                        <label>Sheet Height (mm) *</label>
                         <input type="number" id="inv_height" placeholder="e.g. 2440">
                     </div>
+                    
                     <div class="form-group">
-                        <label>Stock Change (+/-)</label>
+                        <label>Stock Change (+/-) *</label>
                         <input type="number" id="inv_quantity" placeholder="e.g. 10 (In) or -5 (Out)">
                     </div>
+                    
+                    <!-- NEW: Price Per Sheet -->
+                    <div class="form-group">
+                        <label>Price per Full Sheet (₦) *</label>
+                        <input type="number" id="inv_price_sheet" placeholder="e.g. 15000">
+                        <small style="color: #666;">Total cost for one full sheet</small>
+                    </div>
+                    
+                    <!-- UPDATED: Price Per Sq Ft (now optional) -->
+                    <div class="form-group">
+                        <label>Price per Sq. Ft (₦)</label>
+                        <input type="number" id="inv_price" placeholder="e.g. 1800 (optional)">
+                        <small style="color: #666;">Will auto-calculate if left blank</small>
+                    </div>
+                    
                     <div class="form-group">
                         <label>Note (Optional)</label>
-                        <input type="text" id="inv_note" placeholder="e.g. New Shipment">
+                        <input type="text" id="inv_note" placeholder="e.g. New Shipment, Supplier ABC">
                     </div>
                 </div>
+                
                 <div style="margin-top: 15px; text-align: right;">
-                    <button onclick="submitInventory()" class="btn" style="padding: 10px 20px;">Update Stock</button>
+                    <button onclick="toggleInventoryForm()" style="background: #ccc; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; margin-right: 10px;">Cancel</button>
+                    <button onclick="submitInventory()" class="btn" style="padding: 10px 20px;">Save Stock</button>
                 </div>
             </div>
        
-            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px;">
+            <table style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow-x: auto;">
                 <thead style="background: #f1f1f1; border-bottom: 2px solid #ddd;">
                     <tr>
                         <th style="padding: 12px; text-align: left;">Material</th>
                         <th style="padding: 12px; text-align: left;">Color</th>
                         <th style="padding: 12px; text-align: left;">Details</th>
-                        <th style="padding: 12px; text-align: center;">Stock Left</th>
-                        <th style="padding: 12px; text-align: right;">Price / Sq.Ft</th>
+                        <th style="padding: 12px; text-align: center;">Stock</th>
+                        <th style="padding: 12px; text-align: right;">Price/Sheet</th>
+                        <th style="padding: 12px; text-align: right;">Price/Sq.Ft</th>
                         <th style="padding: 12px; text-align: center;">History</th>
                         <th style="padding: 12px; text-align: center;">Action</th>
                     </tr>
                 </thead>
-                <tbody id="inventoryTableBody"></tbody>
+                <tbody id="inventoryTableBody">
+                    <!-- Populated by JavaScript -->
+                </tbody>
             </table>
             
             <div id="historyModal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:20px; box-shadow:0 0 20px rgba(0,0,0,0.2); z-index:1000; width: 400px; border-radius: 8px;">

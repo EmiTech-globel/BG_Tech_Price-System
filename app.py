@@ -176,6 +176,7 @@ class Quote(db.Model):
     
     # Job details
     material = db.Column(db.String(50), nullable=False)
+    material_color = db.Column(db.String(50))
     thickness_mm = db.Column(db.Float, nullable=False)
     width_mm = db.Column(db.Float, nullable=False)
     height_mm = db.Column(db.Float, nullable=False)
@@ -229,6 +230,7 @@ class QuoteItem(db.Model):
     # Job details for this item
     item_name = db.Column(db.String(200))
     material = db.Column(db.String(50), nullable=False)
+    material_color = db.Column(db.String(50))
     thickness_mm = db.Column(db.Float, nullable=False)
     width_mm = db.Column(db.Float, nullable=False)
     height_mm = db.Column(db.Float, nullable=False)
@@ -301,20 +303,20 @@ class TrainingData(db.Model):
             "rush_job": self.rush_job,
             "price": self.price
         }
-    
+
 class Inventory(db.Model):
     __tablename__ = 'inventory'
     id = db.Column(db.Integer, primary_key=True)
     material_name = db.Column(db.String(100), nullable=False)
-    color = db.Column(db.String(50), nullable=True)          # New Field
+    color = db.Column(db.String(50), nullable=True)
     thickness_mm = db.Column(db.Float, nullable=False)
     sheet_width_mm = db.Column(db.Float, nullable=False)
     sheet_height_mm = db.Column(db.Float, nullable=False)
-    quantity_on_hand = db.Column(db.Integer, default=0)      # "What is left"
-    price_per_sq_ft = db.Column(db.Float, nullable=False)    # New Pricing Unit
+    quantity_on_hand = db.Column(db.Integer, default=0)
+    price_per_sq_ft = db.Column(db.Float, nullable=False)
+    price_per_sheet = db.Column(db.Float, default=0)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow)
     
-    # Relationship to history
     transactions = db.relationship('InventoryTransaction', backref='item', lazy=True, cascade="all, delete-orphan")
 
     def to_dict(self):
@@ -325,7 +327,8 @@ class Inventory(db.Model):
             "thickness": self.thickness_mm,
             "size": f"{self.sheet_width_mm}x{self.sheet_height_mm}",
             "stock": self.quantity_on_hand,
-            "price_sq_ft": self.price_per_sq_ft
+            "price_sq_ft": self.price_per_sq_ft,
+            "price_sheet": self.price_per_sheet  # NEW FIELD
         }
 
 class InventoryTransaction(db.Model):
@@ -1743,30 +1746,57 @@ def debug_upload():
 # SMART PRICING WITH INVENTORY INTEGRATION
 # ========================================
 
-def check_material_availability(material, thickness, width_mm, height_mm):
+def check_material_availability(material, thickness, width_mm, height_mm, color=None):
     """
-    Check if material is available in inventory and calculate costs
-    Returns: dict with availability, stock info, and material cost
+    Check if material is available in inventory (with color matching)
     """
     try:
-        # Find matching material in inventory (case-insensitive)
-        inventory_item = Inventory.query.filter(
+        # Build query with color filter
+        query = Inventory.query.filter(
             db.func.lower(Inventory.material_name) == material.lower(),
             Inventory.thickness_mm == thickness
-        ).first()
+        )
+        
+        # Add color filter if specified
+        if color:
+            query = query.filter(db.func.lower(Inventory.color) == color.lower())
+        
+        inventory_item = query.first()
         
         if not inventory_item:
-            return {
-                'available': False,
-                'in_stock': False,
-                'stock_count': 0,
-                'material_cost': 0,
-                'message': f'{material} ({thickness}mm) not found in inventory',
-                'warning': 'Material not tracked in inventory'
-            }
+            # Check if material exists in other colors
+            alternatives = Inventory.query.filter(
+                db.func.lower(Inventory.material_name) == material.lower(),
+                Inventory.thickness_mm == thickness
+            ).all()
+            
+            if alternatives:
+                alt_colors = [
+                    f"{item.color} ({item.quantity_on_hand} sheets)" 
+                    for item in alternatives 
+                    if item.quantity_on_hand > 0
+                ]
+                
+                return {
+                    'available': False,
+                    'in_stock': False,
+                    'stock_count': 0,
+                    'material_cost': 0,
+                    'message': f'{material} {thickness}mm in {color} not found',
+                    'alternatives': alt_colors,
+                    'warning': f'Available in: {", ".join(alt_colors)}' if alt_colors else 'Material not in inventory'
+                }
+            else:
+                return {
+                    'available': False,
+                    'in_stock': False,
+                    'stock_count': 0,
+                    'material_cost': 0,
+                    'message': f'{material} ({thickness}mm) not found in inventory',
+                    'warning': 'Material not tracked in inventory'
+                }
         
         # Calculate area needed in square feet
-        # 1 sq ft = 92,903 sq mm
         area_sq_mm = width_mm * height_mm
         area_sq_ft = area_sq_mm / 92903
         
@@ -1782,6 +1812,7 @@ def check_material_availability(material, thickness, width_mm, height_mm):
             'stock_count': inventory_item.quantity_on_hand,
             'material_cost': round(material_cost, 2),
             'price_per_sq_ft': inventory_item.price_per_sq_ft,
+            'price_per_sheet': inventory_item.price_per_sheet,
             'area_sq_ft': round(area_sq_ft, 4),
             'color': inventory_item.color,
             'inventory_id': inventory_item.id
@@ -1806,38 +1837,13 @@ def check_material_availability(material, thickness, width_mm, height_mm):
             'error': str(e)
         }
 
-def calculate_profit_margin(quoted_price, material_cost, cutting_time_minutes):
-    """
-    Calculate profit margin and warn if too low
-    """
-    # Estimate labor/machine cost (₦200 per minute as example)
-    labor_cost = cutting_time_minutes * 200
-    
-    # Calculate overhead (20% of quoted price as example)
-    overhead = quoted_price * 0.20
-    
-    total_cost = material_cost + labor_cost + overhead
-    profit = quoted_price - total_cost
-    profit_margin = (profit / quoted_price * 100) if quoted_price > 0 else 0
-    
-    return {
-        'material_cost': round(material_cost, 2),
-        'labor_cost': round(labor_cost, 2),
-        'overhead': round(overhead, 2),
-        'total_cost': round(total_cost, 2),
-        'profit': round(profit, 2),
-        'profit_margin': round(profit_margin, 2),
-        'profitable': profit > 0,
-        'warning': 'Price too low - losing money!' if profit < 0 else None
-    }
-
 # ========================================
 # UPDATED CALCULATE PRICE ROUTE
 # ========================================
 
 @app.route('/calculate_price', methods=['POST'])
 def calculate_price():
-    """Calculate price with inventory integration"""
+    """Calculate price with inventory integration (color-aware)"""
     try:
         data = request.get_json()
         
@@ -1856,41 +1862,39 @@ def calculate_price():
             'rush_job': int(data.get('rush', 0))
         }
         
+        # Get color if provided
+        color = data.get('color')
+        
         # Get AI predicted price
         price = predict_price(job_data)
         
         if price is None:
             return jsonify({'success': False, 'error': 'Could not calculate price'})
         
-        # Check inventory availability
+        # Check inventory availability (with color)
         inventory_check = check_material_availability(
             job_data['material'],
             job_data['thickness_mm'],
             job_data['width_mm'],
-            job_data['height_mm']
+            job_data['height_mm'],
+            color  # Pass color parameter
         )
         
-        # Calculate profit analysis
-        profit_analysis = calculate_profit_margin(
-            price,
-            inventory_check['material_cost'] * job_data['quantity'],
-            job_data['cutting_time_minutes']
-        )
-        
-        # Build response with all information
+        # Build response
         response = {
             'success': True,
             'price': price,
-            'inventory': inventory_check,
-            'profit_analysis': profit_analysis
+            'inventory': inventory_check
         }
         
         # Add warnings if necessary
         warnings = []
         if not inventory_check['in_stock']:
             warnings.append(inventory_check['message'])
-        if profit_analysis.get('warning'):
-            warnings.append(profit_analysis['warning'])
+            
+            # Add alternatives if available
+            if inventory_check.get('alternatives'):
+                warnings.append(f"Try: {inventory_check.get('warning', '')}")
         
         if warnings:
             response['warnings'] = warnings
@@ -1998,6 +2002,7 @@ def save_quote():
             customer_phone=data.get('customer_phone', ''),
             customer_whatsapp=data.get('customer_whatsapp', ''),
             material=data['material'],
+            material_color=data.get('color'), 
             thickness_mm=float(data['thickness']),
             width_mm=float(data['width']),
             height_mm=float(data['height']),
@@ -2294,20 +2299,22 @@ def get_stock_history(item_id):
 @app.route('/api/inventory/add', methods=['POST'])
 @requires_auth
 def add_inventory():
+    """Updated to handle both price_per_sq_ft and price_per_sheet"""
     try:
         data = request.json
         
         # Parse Inputs
         material = data.get('material')
-        color = data.get('color', 'Clear') # Default to Clear if empty
+        color = data.get('color', 'Default')
         thickness = float(data.get('thickness', 0))
         width = float(data.get('width', 0))
         height = float(data.get('height', 0))
         qty_change = int(data.get('quantity', 0))
-        price_sq_ft = float(data.get('price_sq_ft', 0)) # User Manually Sets This
+        price_sq_ft = float(data.get('price_sq_ft', 0))
+        price_sheet = float(data.get('price_sheet', 0))  # NEW
         note = data.get('note', 'Initial Stock')
 
-        # Check for existing item
+        # Check for existing item (match by material, color, AND thickness)
         existing = Inventory.query.filter_by(
             material_name=material,
             color=color,
@@ -2317,7 +2324,8 @@ def add_inventory():
         if existing:
             # Update existing item
             existing.quantity_on_hand += qty_change
-            existing.price_per_sq_ft = price_sq_ft # Update price if changed
+            existing.price_per_sq_ft = price_sq_ft
+            existing.price_per_sheet = price_sheet  # NEW
             existing.updated_at = datetime.utcnow()
             
             # Log Transaction
@@ -2339,10 +2347,11 @@ def add_inventory():
                 sheet_width_mm=width,
                 sheet_height_mm=height,
                 quantity_on_hand=qty_change,
-                price_per_sq_ft=price_sq_ft
+                price_per_sq_ft=price_sq_ft,
+                price_per_sheet=price_sheet  # NEW
             )
             db.session.add(new_item)
-            db.session.flush() # Get the ID before committing
+            db.session.flush()
             
             # Log Initial Transaction
             new_trans = InventoryTransaction(
@@ -2356,9 +2365,63 @@ def add_inventory():
 
         db.session.commit()
         return jsonify({"status": "success", "message": f"Stock {action} successfully"})
+        
     except Exception as e:
         db.session.rollback()
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/inventory/colors', methods=['GET'])
+def get_available_colors():
+    """
+    Get all available colors for a specific material and thickness
+    Query params: material, thickness
+    Returns colors with stock count
+    """
+    try:
+        material = request.args.get('material', '')
+        thickness_str = request.args.get('thickness', '')
+        
+        if not material or not thickness_str:
+            return jsonify({
+                'success': False,
+                'error': 'Missing material or thickness parameter'
+            }), 400
+        
+        try:
+            thickness = float(thickness_str)
+        except ValueError:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid thickness format'
+            }), 400
+        
+        # Query inventory for matching material and thickness
+        items = Inventory.query.filter_by(
+            material_name=material,
+            thickness_mm=thickness
+        ).all()
+        
+        # Build color list with stock info
+        colors = []
+        for item in items:
+            colors.append({
+                'color': item.color or 'Default',
+                'stock': item.quantity_on_hand,
+                'in_stock': item.quantity_on_hand > 0,
+                'price_sq_ft': item.price_per_sq_ft,
+                'price_sheet': item.price_per_sheet
+            })
+        
+        return jsonify({
+            'success': True,
+            'colors': colors
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/inventory/delete/<int:item_id>', methods=['DELETE'])
 @requires_auth
