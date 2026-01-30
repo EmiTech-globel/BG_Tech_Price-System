@@ -191,6 +191,12 @@ class Quote(db.Model):
     
     # Pricing
     quoted_price = db.Column(db.Float, nullable=False)
+
+    # Discount details
+    discount_applied = db.Column(db.Boolean, default=False)
+    discount_percentage = db.Column(db.Float, default=0)
+    discount_amount = db.Column(db.Float, default=0)
+    original_price = db.Column(db.Float)  # Price before discount
     
     # Metadata
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -206,6 +212,7 @@ class Quote(db.Model):
             'customer_phone': self.customer_phone,
             'customer_whatsapp': self.customer_whatsapp,
             'material': self.material,
+            'material_color': self.material_color,
             'thickness_mm': self.thickness_mm,
             'width_mm': self.width_mm,
             'height_mm': self.height_mm,
@@ -217,6 +224,10 @@ class Quote(db.Model):
             'quantity': self.quantity,
             'rush_job': self.rush_job,
             'quoted_price': self.quoted_price,
+            'discount_applied': self.discount_applied,
+            'discount_percentage': self.discount_percentage,
+            'discount_amount': self.discount_amount,
+            'original_price': self.original_price,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'notes': self.notes,
             'items': [item.to_dict() for item in self.items] if hasattr(self, 'items') else []
@@ -1459,9 +1470,16 @@ def generate_quote_pdf(quote):
 
         # Final Price box for bulk
         elements.append(Paragraph("Pricing", heading_style))
-        price_data = [
-            ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
-        ]
+        if quote.discount_applied:
+            price_data = [
+                ['Subtotal', f"N{quote.original_price:,.2f}"],
+                [f'Discount ({quote.discount_percentage}%)', f"-N{quote.discount_amount:,.2f}"],
+                ['TOTAL AMOUNT', f"N{quote.quoted_price:,.2f}"]
+            ]
+        else:
+            price_data = [
+                ['TOTAL AMOUNT', f"N{quote.quoted_price:,.2f}"]
+            ]
         price_table = Table(price_data, colWidths=[120*mm, 50*mm])
         price_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
@@ -1469,34 +1487,62 @@ def generate_quote_pdf(quote):
             ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 18),
+            ('FONTSIZE', (0, 0), (-1, -1), 14),
             ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
-            ('TOPPADDING', (0, 0), (-1, -1), 15),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
         ]))
         elements.append(price_table)
 
     else:
-        # Price Section for single-item quotes
+        # Pricing Section
         elements.append(Paragraph("Pricing", heading_style))
-        
+    
+    if quote.discount_applied:
+        # Show discount breakdown
         price_data = [
-            ['TOTAL AMOUNT', f"₦{quote.quoted_price:,.2f}"]
+            ['Subtotal', f"N{quote.original_price:,.2f}"],
+            [f'Discount ({quote.discount_percentage}%)', f"-N{quote.discount_amount:,.2f}"],
+            ['TOTAL AMOUNT', f"N{quote.quoted_price:,.2f}"]
         ]
-        
-        price_table = Table(price_data, colWidths=[120*mm, 50*mm])
+    else:
+        # No discount
+        price_data = [
+            ['TOTAL AMOUNT', f"N{quote.quoted_price:,.2f}"]
+        ]
+    
+    price_table = Table(price_data, colWidths=[120*mm, 50*mm])
+    
+    # Styling
+    if quote.discount_applied:
+        price_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 1), colors.HexColor('#FFFFFF')),
+            ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor('#FFF8F0')),
+            ('TEXTCOLOR', (0, 0), (-1, 1), colors.HexColor('#333333')),
+            ('TEXTCOLOR', (0, 2), (-1, 2), colors.HexColor('#E89D3C')),
+            ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+            ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+            ('FONTNAME', (0, 2), (-1, 2), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 1), 12),
+            ('FONTSIZE', (0, 2), (-1, 2), 14),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#E89D3C')),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ]))
+    else:
         price_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#FFF8F0')),
             ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#E89D3C')),
             ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
             ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 18),
+            ('FONTSIZE', (0, 0), (-1, -1), 14),
             ('GRID', (0, 0), (-1, -1), 2, colors.HexColor('#E89D3C')),
-            ('TOPPADDING', (0, 0), (-1, -1), 15),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+            ('TOPPADDING', (0, 0), (-1, -1), 12),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
         ]))
-        elements.append(price_table)
+    
+    elements.append(price_table)
     elements.append(Spacer(1, 10*mm))
     
     # Notes
@@ -1976,9 +2022,151 @@ def calculate_bulk_prices():
 # QUOTE MANAGEMENT ROUTES
 # ========================================
 
+# ========================================
+# APPLY DISCOUNT TO QUOTE
+# ========================================
+
+@app.route('/api/quote/<int:quote_id>/apply-discount', methods=['POST'])
+def apply_discount_to_quote(quote_id):
+    """
+    Apply discount to an existing saved quote
+    Allows: 2%, 5%, 10%, or custom percentage
+    Minimum amount: ₦10,500
+    """
+    try:
+        data = request.get_json()
+        discount_percent = float(data.get('discount_percentage', 0))
+        
+        # Validate discount percentage
+        if discount_percent <= 0 or discount_percent > 100:
+            return jsonify({
+                'success': False,
+                'error': 'Discount must be between 0 and 100%'
+            }), 400
+        
+        # Get the quote
+        quote = Quote.query.get(quote_id)
+        if not quote:
+            return jsonify({
+                'success': False,
+                'error': 'Quote not found'
+            }), 404
+        
+        # Check if discount already applied
+        if quote.discount_applied:
+            return jsonify({
+                'success': False,
+                'error': 'Discount already applied to this quote. Cannot apply twice.'
+            }), 400
+        
+        # Get current price (or original if already discounted somehow)
+        current_price = quote.quoted_price
+        
+        # Check minimum amount (₦10,500)
+        if current_price < 10500:
+            return jsonify({
+                'success': False,
+                'error': f'Discount cannot be applied. Minimum amount: ₦10,500. Current: ₦{current_price:,.2f}'
+            }), 400
+        
+        # Calculate discount
+        discount_amount = current_price * (discount_percent / 100)
+        new_price = current_price - discount_amount
+        
+        # Update quote
+        quote.original_price = current_price
+        quote.discount_percentage = discount_percent
+        quote.discount_amount = discount_amount
+        quote.quoted_price = new_price
+        quote.discount_applied = True
+        
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'{discount_percent}% discount applied successfully!',
+            'original_price': current_price,
+            'discount_percentage': discount_percent,
+            'discount_amount': discount_amount,
+            'new_price': new_price,
+            'quote': quote.to_dict()
+        })
+        
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'error': 'Invalid discount percentage'
+        }), 400
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error applying discount: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ========================================
+# APPLY DISCOUNT TO CURRENT QUOTE (BEFORE SAVING)
+# ========================================
+
+@app.route('/api/calculate-discount', methods=['POST'])
+def calculate_discount():
+    """
+    Calculate discount for a quote before saving
+    Used in the result box discount button
+    """
+    try:
+        data = request.get_json()
+        current_price = float(data.get('current_price', 0))
+        discount_percent = float(data.get('discount_percentage', 0))
+        
+        # Validate
+        if discount_percent <= 0 or discount_percent > 100:
+            return jsonify({
+                'success': False,
+                'error': 'Discount must be between 0 and 100%'
+            }), 400
+        
+        # Check minimum amount
+        if current_price < 10500:
+            return jsonify({
+                'success': False,
+                'error': f'Discount cannot be applied. Minimum amount: ₦10,500. Current: ₦{current_price:,.2f}'
+            }), 400
+        
+        # Calculate discount
+        discount_amount = current_price * (discount_percent / 100)
+        new_price = current_price - discount_amount
+        
+        return jsonify({
+            'success': True,
+            'original_price': current_price,
+            'discount_percentage': discount_percent,
+            'discount_amount': discount_amount,
+            'new_price': new_price
+        })
+        
+    except ValueError:
+        return jsonify({
+            'success': False,
+            'error': 'Invalid price or discount percentage'
+        }), 400
+    except Exception as e:
+        print(f"Error calculating discount: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# =======================================
+# SINGLE QUOTE SAVING ROUTE WITH DISCOUNT
+# =======================================
+
 @app.route('/save_quote', methods=['POST'])
 def save_quote():
-    """Save a quote to database"""
+    """Save a quote to database (with optional discount)"""
     try:
         data = request.get_json()
         
@@ -1994,6 +2182,13 @@ def save_quote():
         
         quote_number = f"Q{today}{new_num:03d}"
         
+        # Get discount data if present
+        discount_applied = data.get('discount_applied', False)
+        discount_percentage = float(data.get('discount_percentage', 0))
+        discount_amount = float(data.get('discount_amount', 0))
+        original_price = float(data.get('original_price')) if data.get('original_price') else None
+        final_price = float(data['price'])
+        
         # Create new quote
         quote = Quote(
             quote_number=quote_number,
@@ -2002,7 +2197,7 @@ def save_quote():
             customer_phone=data.get('customer_phone', ''),
             customer_whatsapp=data.get('customer_whatsapp', ''),
             material=data['material'],
-            material_color=data.get('color'), 
+            material_color=data.get('color'),
             thickness_mm=float(data['thickness']),
             width_mm=float(data['width']),
             height_mm=float(data['height']),
@@ -2014,7 +2209,11 @@ def save_quote():
             cutting_time_minutes=float(data['time']),
             quantity=int(data.get('quantity', 1)),
             rush_job=int(data.get('rush', 0)),
-            quoted_price=float(data['price']),
+            quoted_price=final_price,
+            discount_applied=discount_applied,
+            discount_percentage=discount_percentage,
+            discount_amount=discount_amount,
+            original_price=original_price,
             notes=data.get('notes', '')
         )
         
@@ -2030,6 +2229,9 @@ def save_quote():
         
     except Exception as e:
         db.session.rollback()
+        print(f"Error saving quote: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
 
 # =======================================
@@ -2058,6 +2260,13 @@ def save_bulk_quote():
         items_data = data.get('items', [])
         total_price = sum(float(item['price']) for item in items_data)
         
+        # Get discount data if present
+        discount_applied = data.get('discount_applied', False)
+        discount_percentage = float(data.get('discount_percentage', 0))
+        discount_amount = float(data.get('discount_amount', 0))
+        original_price = float(data.get('original_price')) if data.get('original_price') else None
+        final_price = float(data.get('price', total_price)) if data.get('price') else total_price
+        
         # Use first item's details for main quote (for backward compatibility)
         first_item = items_data[0] if items_data else {}
         
@@ -2080,7 +2289,11 @@ def save_bulk_quote():
             cutting_time_minutes=float(first_item.get('time', 0)),
             quantity=int(first_item.get('quantity', 1)),
             rush_job=int(first_item.get('rush', 0)),
-            quoted_price=total_price,
+            quoted_price=final_price,
+            discount_applied=discount_applied,
+            discount_percentage=discount_percentage,
+            discount_amount=discount_amount,
+            original_price=original_price,
             notes=data.get('notes', '')
         )
         

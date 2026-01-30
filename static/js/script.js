@@ -5,6 +5,10 @@ let currentJobData = null;
 let currentPrice = null;
 let bulkItems = [];
 
+// Global variables for discount state
+let selectedDiscountPercent = 0;
+let discountAppliedToCurrentQuote = false;
+
 // ========================================
 // MODAL DIALOG FUNCTIONS
 // ========================================
@@ -388,7 +392,7 @@ async function calculateFromUpload() {
     const jobData = {
         material: material,
         thickness: parseFloat(thickness),
-        color: color,  // NEW
+        color: color,
         letters: extractedData.num_letters,
         shapes: extractedData.num_shapes,
         complexity: extractedData.complexity_score,
@@ -478,6 +482,7 @@ function displayResultWithInventory(price, jobData, inventory, warnings) {
     // Store current quote data
     currentJobData = jobData;
     currentPrice = price;
+    discountAppliedToCurrentQuote = false;
     
     // Display price
     document.getElementById('priceDisplay').textContent = '₦' + price.toLocaleString('en-NG', {
@@ -493,6 +498,12 @@ function displayResultWithInventory(price, jobData, inventory, warnings) {
     document.getElementById('resultQuantity').textContent = jobData.quantity;
     document.getElementById('resultTime').textContent = jobData.time + ' minutes';
     
+    // Reset discount UI
+    document.getElementById('discountBreakdown').style.display = 'none';
+    document.getElementById('applyDiscountBtn').disabled = false;
+    document.getElementById('applyDiscountBtn').textContent = 'Apply Discount';
+    document.getElementById('applyDiscountBtn').style.opacity = '1';
+
     // Create or update inventory status section
     let inventorySection = document.getElementById('inventoryStatus');
     if (!inventorySection) {
@@ -533,7 +544,8 @@ function displayResultWithInventory(price, jobData, inventory, warnings) {
                     ${inventory.message}
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-                    <div><strong>Color:</strong> ${inventory.color || 'N/A'}</div>
+                    <div><strong>Material:</strong> ${jobData.material}</div>
+                    <div><strong>Color:</strong> ${jobData.color || 'N/A'}</div>
                     <div><strong>Area Needed:</strong> ${inventory.area_sq_ft} sq ft</div>
                     <div><strong>Price/sq ft:</strong> ₦${inventory.price_per_sq_ft.toLocaleString()}</div>
                 </div>
@@ -617,7 +629,11 @@ async function saveCurrentQuote() {
         customer_email: document.getElementById('customerEmail').value,
         customer_phone: document.getElementById('customerPhone').value,
         customer_whatsapp: document.getElementById('customerWhatsApp').value,
-        notes: document.getElementById('quoteNotes').value
+        notes: document.getElementById('quoteNotes').value,
+        discount_applied: discountAppliedToCurrentQuote,
+        discount_percentage: currentJobData.discount_percentage || 0,
+        discount_amount: currentJobData.discount_amount || 0,
+        original_price: currentJobData.original_price || null
     };
     
     try {
@@ -642,6 +658,9 @@ async function saveCurrentQuote() {
             document.getElementById('customerForm').style.display = 'none';
             document.getElementById('saveQuoteBtn').style.display = 'block';
             
+            // Reset discount state
+            discountAppliedToCurrentQuote = false;
+
             // Refresh quotes list if on quotes tab (only if element exists)
             const quotesTab = document.getElementById('quotes');
             if (quotesTab && quotesTab.classList.contains('active')) {
@@ -683,46 +702,87 @@ async function loadQuotes() {
 
 function createQuoteCard(quote) {
     const rushBadge = quote.rush_job ? '<span style="background: #ff6b6b; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">⚡ RUSH</span>' : '';
-    
+    const discountBadge = quote.discount_applied ? `<span style="background: #28a745; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">${quote.discount_percentage}% OFF</span>` : '';
+
+    // Price display (shown for both single and bulk quotes)
+    let priceHTML = '';
+    if (quote.discount_applied && quote.original_price) {
+        priceHTML = `
+            <div style="text-align: right;">
+                <div style="font-size: 0.9em; color: #999; text-decoration: line-through; margin-bottom:6px;">₦${Number(quote.original_price).toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                <div style="font-size: 1.3em; font-weight: bold; color: #28a745; margin-bottom:6px;">₦${Number(quote.quoted_price).toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                <div style="font-size: 0.9em; color: #28a745;">Removed ₦${Number(quote.discount_amount || 0).toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+            </div>
+        `;
+    } else {
+        priceHTML = `
+            <div style="text-align: right;">
+                <div style="font-size: 1.3em; font-weight: bold; color: #E89D3C;">₦${Number(quote.quoted_price).toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+            </div>
+        `;
+    }
+
+    // Items list for bulk orders (if present)
+    let itemsHTML = '';
+    if (Array.isArray(quote.items) && quote.items.length > 0) {
+        const listItems = quote.items.map((it, i) => {
+            const name = it.item_name || it.name || `Item ${i + 1}`;
+            const material = it.material || 'Unknown';
+            const thickness = it.thickness_mm || it.thickness || '';
+            const w = it.width_mm || it.width || it.w || '';
+            const h = it.height_mm || it.height || it.h || '';
+            const price = Number(it.item_price || it.price || 0).toLocaleString('en-NG', {minimumFractionDigits: 2});
+            return `<li style="margin-bottom:6px;">• ${name} - ${material} (${thickness}mm) - ${w}×${h}mm - Price: ₦${price}</li>`;
+        }).join('');
+
+        itemsHTML = `
+            <div style="margin-top: 15px;">
+                <strong>Items (${quote.items.length}):</strong>
+                <ul style="margin: 8px 0 0 18px; padding: 0; list-style: none;">
+                    ${listItems}
+                </ul>
+            </div>
+        `;
+    }
+
+    // For single-item quotes without items array, show details grid
+    const singleDetailsHTML = (!Array.isArray(quote.items) || quote.items.length === 0) ? `
+        <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
+                <div><strong>Material:</strong> ${quote.material} (${quote.thickness_mm || ''}mm)</div>
+                <div><strong>Size:</strong> ${quote.width_mm || ''}×${quote.height_mm || ''}mm</div>
+                <div><strong>Cutting:</strong> ${quote.cutting_type || ''}</div>
+                <div><strong>Quantity:</strong> ${quote.quantity || ''}</div>
+                <div><strong>Time:</strong> ${quote.cutting_time_minutes || ''} min</div>
+                <div><strong>Complexity:</strong> ${quote.complexity_score || ''}/5</div>
+            </div>
+        </div>
+    ` : '';
+
     return `
         <div style="background: #f9f9f9; border-left: 4px solid #E89D3C; padding: 20px; margin-bottom: 15px; border-radius: 8px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <div>
-                    <h3 style="margin: 0; color: #E89D3C;">${quote.quote_number}${rushBadge}</h3>
-                    <small style="color: #999;">${quote.created_at}</small>
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
+                <div style="flex:1;">
+                    <h3 style="margin: 0; color: #E89D3C;">${quote.quote_number}${rushBadge}${discountBadge}</h3>
+                    <div style="font-size: 0.9em; color: #999; margin-bottom:6px;">${quote.created_at}</div>
                 </div>
-                <div style="text-align: right;">
-                    <div style="font-size: 1.5em; font-weight: bold; color: #E89D3C;">₦${quote.quoted_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
-                </div>
+                ${priceHTML}
             </div>
-            
+
             ${quote.customer_name ? `<p style="margin: 5px 0;"><strong>Customer:</strong> ${quote.customer_name}</p>` : ''}
             ${quote.customer_email ? `<p style="margin: 5px 0;"><strong>Email:</strong> ${quote.customer_email}</p>` : ''}
             ${quote.customer_phone ? `<p style="margin: 5px 0;"><strong>Phone:</strong> ${quote.customer_phone}</p>` : ''}
-            
-            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-                    <div><strong>Material:</strong> ${quote.material} (${quote.thickness_mm}mm)</div>
-                    <div><strong>Size:</strong> ${quote.width_mm}×${quote.height_mm}mm</div>
-                    <div><strong>Cutting:</strong> ${quote.cutting_type}</div>
-                    <div><strong>Quantity:</strong> ${quote.quantity}</div>
-                    <div><strong>Time:</strong> ${quote.cutting_time_minutes} min</div>
-                    <div><strong>Complexity:</strong> ${quote.complexity_score}/5</div>
-                </div>
-            </div>
-            
+
+            ${itemsHTML}
+
+            ${singleDetailsHTML}
+
             ${quote.notes ? `<div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 5px;"><strong>Notes:</strong> ${quote.notes}</div>` : ''}
-            
+
             <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
-                    Download PDF
-                </button>
-                <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">
-                    📎 Share WhatsApp
-                </button>
-                <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">
-                    Delete
-                </button>
+                <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Download PDF</button>
+                <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">📎 Share WhatsApp</button>
+                <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Delete</button>
             </div>
         </div>
     `;
@@ -1208,17 +1268,14 @@ function updateBulkItemsDisplay() {
     }
     
     container.innerHTML = bulkItems.map((item, index) => {
-        const stockBadge = item.inventory?.in_stock 
-            ? `<span style="background: #4CAF50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">✅ In Stock</span>`
-            : item.inventory 
-            ? `<span style="background: #F44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">❌ Out of Stock</span>`
-            : '';
+        const hasMaterialSet = item.material && item.thickness && item.color;
         
-        // Get current material and thickness values (normalize to strings for <select> matching)
-        const currentMaterial = item.material || '';
-        const currentThickness = (item.thickness !== null && item.thickness !== undefined && item.thickness !== 0)
-            ? String(item.thickness)
-            : '';
+        let stockBadge = '';
+        if (hasMaterialSet && item.price) {
+            stockBadge = item.inventory?.in_stock 
+                ? `<span style="background: #4CAF50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">✅ In Stock</span>`
+                : `<span style="background: #F44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.75em;">❌ Out of Stock</span>`;
+        }
         
         return `
         <div class="bulk-item-card">
@@ -1246,21 +1303,21 @@ function updateBulkItemsDisplay() {
                 <div class="material-selection">
                     <select onchange="updateBulkItemMaterial(${item.id}, this.value)" class="form-control-sm">
                         <option value="">Select Material</option>
-                        <option value="Acrylic" ${currentMaterial === 'Acrylic' ? 'selected' : ''}>Acrylic</option>
-                        <option value="Wood" ${currentMaterial === 'Wood' ? 'selected' : ''}>Wood</option>
-                        <option value="Metal" ${currentMaterial === 'Metal' ? 'selected' : ''}>Metal</option>
-                        <option value="MDF" ${currentMaterial === 'MDF' ? 'selected' : ''}>MDF</option>
-                        <option value="ACP" ${currentMaterial === 'ACP' ? 'selected' : ''}>ACP</option>
+                        <option value="Acrylic" ${item.material === 'Acrylic' ? 'selected' : ''}>Acrylic</option>
+                        <option value="Wood" ${item.material === 'Wood' ? 'selected' : ''}>Wood</option>
+                        <option value="Metal" ${item.material === 'Metal' ? 'selected' : ''}>Metal</option>
+                        <option value="MDF" ${item.material === 'MDF' ? 'selected' : ''}>MDF</option>
+                        <option value="ACP" ${item.material === 'ACP' ? 'selected' : ''}>ACP</option>
                     </select>
                     <select onchange="updateBulkItemThickness(${item.id}, this.value)" class="form-control-sm">
                         <option value="">Thickness</option>
-                        <option value="3" ${currentThickness === '3' ? 'selected' : ''}>3mm</option>
-                        <option value="4" ${currentThickness === '4' ? 'selected' : ''}>4mm</option>
-                        <option value="6" ${currentThickness === '6' ? 'selected' : ''}>6mm</option>
-                        <option value="8" ${currentThickness === '8' ? 'selected' : ''}>8mm</option>
-                        <option value="9" ${currentThickness === '9' ? 'selected' : ''}>9mm</option>
-                        <option value="10" ${currentThickness === '10' ? 'selected' : ''}>10mm</option>
-                        <option value="12" ${currentThickness === '12' ? 'selected' : ''}>12mm</option>
+                        <option value="3" ${item.thickness === 3 ? 'selected' : ''}>3mm</option>
+                        <option value="4" ${item.thickness === 4 ? 'selected' : ''}>4mm</option>
+                        <option value="6" ${item.thickness === 6 ? 'selected' : ''}>6mm</option>
+                        <option value="8" ${item.thickness === 8 ? 'selected' : ''}>8mm</option>
+                        <option value="9" ${item.thickness === 9 ? 'selected' : ''}>9mm</option>
+                        <option value="10" ${item.thickness === 10 ? 'selected' : ''}>10mm</option>
+                        <option value="12" ${item.thickness === 12 ? 'selected' : ''}>12mm</option>
                     </select>
                 </div>
                 ${item.material && item.thickness ? `
@@ -1277,7 +1334,7 @@ function updateBulkItemsDisplay() {
             ${item.inventory && item.inventory.material_cost ? `
                 <div style="margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 5px; font-size: 0.9em;">
                     <strong>Material Cost:</strong> ₦${(item.inventory.material_cost * item.quantity).toLocaleString()} 
-                    <span style="color: #666;">(${item.inventory.area_sq_ft.toFixed(2)} sq ft @ ₦${item.inventory.price_per_sq_ft}/sq ft)</span>
+                    <span style="color: #666;">(${item.inventory.area_sq_ft.toFixed(2)} sq ft @ ₦${item.inventory.price_per_sq_ft}/sq ft) ${item.color || ''} ${item.material || ''}</span>
                 </div>
             ` : ''}
         </div>
@@ -1285,18 +1342,54 @@ function updateBulkItemsDisplay() {
     }).join('');
     
     // Update total section with cost breakdown
-    const bulkTotalHTML = `
+    let bulkTotalHTML = `
         <div style="background: #FFF8F0; padding: 25px; border-radius: 12px; margin-top: 20px; border: 2px solid #E89D3C;">
+    `;
+    
+    if (window.bulkOrderDiscount && window.bulkOrderDiscount.applied) {
+        // Show discount breakdown
+        const discountInfo = window.bulkOrderDiscount;
+        const subtotal = discountInfo.original_price || grandTotal;
+        const discountPercent = discountInfo.discount_percentage || 0;
+        const discountAmount = discountInfo.discount_amount || 0;
+        const finalPrice = subtotal - discountAmount;  // Calculate final discounted price
+        
+        bulkTotalHTML += `
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                <div>
+                    <div style="font-size: 0.9em; color: #666;">Original Price</div>
+                    <div style="font-size: 1.1em; font-weight: bold; text-decoration: line-through; color: #999;">₦${subtotal.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.9em; color: #666;">Discount (${discountPercent}%)</div>
+                    <div style="font-size: 1.1em; font-weight: bold; color: #28a745;">-₦${discountAmount.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                </div>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; background: rgba(40, 167, 69, 0.1); border-radius: 8px; border-left: 4px solid #28a745; margin-top: 15px;">
+                <div style="font-size: 1.3em; font-weight: bold;">Grand Total</div>
+                <div style="font-size: 2em; font-weight: bold; color: #28a745;">₦${finalPrice.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+            </div>
+        `;
+    } else {
+        // No discount - show normal total
+        bulkTotalHTML += `
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
                 <div>
                     <div style="font-size: 0.9em; color: #666;">Total Material Cost</div>
-                    <div style="font-size: 2em; font-weight: bold; color: #E89D3C;">₦${totalMaterialCost.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                    <div style="font-size: 1.3em; font-weight: bold; color: #333;">₦${totalMaterialCost.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
                 </div>
                 <div>
-                    <div style="font-size: 0.9em; color: #666;">Total Quote Cost</div>
-                    <div id="grandTotal" style="font-size: 2em; font-weight: bold; color: #E89D3C;">₦${grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
+                    <div style="font-size: 0.9em; color: #666;">Grand Total</div>
+                    <div style="font-size: 2em; font-weight: bold; color: #E89D3C;">₦${grandTotal.toLocaleString('en-NG', {minimumFractionDigits: 2})}</div>
                 </div>
             </div>
+            <button class="btn" onclick="showBulkDiscountModal()" style="margin-top: 10px; background: linear-gradient(135deg, #28a745 0%, #20963b 100%);">
+               Apply Discount
+            </button>
+        `;
+    }
+    
+    bulkTotalHTML += `
             <button class="btn" onclick="saveBulkQuote()" style="margin-top: 10px;">
                 💾 Save Complete Order
             </button>
@@ -1384,15 +1477,13 @@ async function saveBulkQuote() {
         return;
     }
     
-    // Calculate individual price for each item if not already calculated
+    // Calculate prices for any items missing them
     const itemsWithPrices = await Promise.all(
         bulkItems.map(async (item) => {
-            // If item already has a price from price calculation, use it
             if (item.price && item.price > 0) {
                 return item;
             }
             
-            // Otherwise calculate price for this specific item
             try {
                 const priceResponse = await fetch('/calculate_price', {
                     method: 'POST',
@@ -1402,6 +1493,7 @@ async function saveBulkQuote() {
                     body: JSON.stringify({
                         material: item.material,
                         thickness: item.thickness,
+                        color: item.color,
                         width: item.width,
                         height: item.height,
                         letters: item.letters || 0,
@@ -1427,7 +1519,29 @@ async function saveBulkQuote() {
         })
     );
     
-    // Ask for customer info using modals
+    // Calculate total
+    const subtotal = itemsWithPrices.reduce((sum, item) => sum + (item.price || 0), 0);
+    let finalTotal = subtotal;
+    
+    // Include discount if applied
+    let discountData = {
+        discount_applied: false,
+        discount_percentage: 0,
+        discount_amount: 0,
+        original_price: null
+    };
+    
+    if (window.bulkOrderDiscount && window.bulkOrderDiscount.applied) {
+        discountData = {
+            discount_applied: true,
+            discount_percentage: window.bulkOrderDiscount.discount_percentage || 0,
+            discount_amount: window.bulkOrderDiscount.discount_amount || 0,
+            original_price: window.bulkOrderDiscount.original_price || subtotal
+        };
+        finalTotal = window.bulkOrderDiscount.new_price || (subtotal - (window.bulkOrderDiscount.discount_amount || 0));
+    }
+    
+    // Ask for customer info
     const customerName = await showModalInput('👤 Customer Name', 'Enter customer name (optional):', 'e.g., John Doe', '') || '';
     const customerEmail = await showModalInput('📧 Customer Email', 'Enter customer email (optional):', 'e.g., john@example.com', '') || '';
     const customerPhone = await showModalInput('☎️ Customer Phone', 'Enter customer phone (optional):', 'e.g., +234 803 123 4567', '') || '';
@@ -1440,7 +1554,9 @@ async function saveBulkQuote() {
         customer_email: customerEmail,
         customer_phone: customerPhone,
         customer_whatsapp: customerWhatsApp,
-        notes: notes
+        notes: notes,
+        price: finalTotal,  // Add final price
+        ...discountData  // Include discount data
     };
     
     try {
@@ -1455,12 +1571,22 @@ async function saveBulkQuote() {
         const result = await response.json();
         
         if (result.success) {
-            const message = `Quote Number: ${result.quote_number}\nTotal Items: ${result.items_count}\nTotal Price: ₦${result.total_price.toLocaleString('en-NG', {minimumFractionDigits: 2})}`;
+            let message = `Quote Number: ${result.quote_number}\nTotal Items: ${result.items_count}\n`;
+            
+            if (discountData.discount_applied && discountData.original_price) {
+                message += `Subtotal: ₦${Number(discountData.original_price).toLocaleString('en-NG', {minimumFractionDigits: 2})}\n`;
+                message += `Discount (${discountData.discount_percentage}%): -₦${Number(discountData.discount_amount || 0).toLocaleString('en-NG', {minimumFractionDigits: 2})}\n`;
+                message += `Final Price: ₦${Number(finalTotal).toLocaleString('en-NG', {minimumFractionDigits: 2})}`;
+            } else {
+                message += `Final Price: ₦${Number(result.total_price || finalTotal).toLocaleString('en-NG', {minimumFractionDigits: 2})}`;
+            }
+            
             showModalAlert('Quote Saved Successfully!', message, 'success');
             
             // Clear bulk order
             bulkItems = [];
             bulkItemCounter = 0;
+            window.bulkOrderDiscount = null;
             updateBulkItemsDisplay();
         } else {
             showModalAlert('❌ Error Saving Quote', result.error, 'error');
@@ -2026,4 +2152,241 @@ async function loadColorsForMaterial(context) {
             helpText.style.color = '#dc3545';
         }
     }
+}
+
+// ========================================
+// DISCOUNT MODAL FUNCTIONS
+// ========================================
+
+/**
+ * Show the discount modal
+ */
+function showDiscountModal() {
+    // Check if price is calculated
+    if (!currentPrice || currentPrice === 0) {
+        showNotification('Please calculate a price first!', 'warning');
+        return;
+    }
+    
+    // Check if discount already applied
+    if (discountAppliedToCurrentQuote) {
+        showNotification('Discount already applied to this quote!', 'warning');
+        return;
+    }
+    
+    // Check minimum amount
+    if (currentPrice < 10500) {
+        showNotification(`Discount cannot be applied. Minimum amount: ₦10,500. Current: ₦${currentPrice.toLocaleString()}`, 'error');
+        return;
+    }
+    
+    // Reset modal state
+    selectedDiscountPercent = 0;
+    document.getElementById('customDiscountInput').value = '';
+    document.querySelectorAll('.discount-option-btn').forEach(btn => {
+        btn.classList.remove('selected');
+    });
+    document.getElementById('discountPreview').style.display = 'none';
+    document.getElementById('confirmDiscountBtn').disabled = true;
+    
+    // Show modal
+    document.getElementById('discountModal').style.display = 'flex';
+}
+
+/**
+ * Close the discount modal
+ */
+function closeDiscountModal() {
+    document.getElementById('discountModal').style.display = 'none';
+}
+
+/**
+ * Select a discount percentage
+ */
+function selectDiscountPercent(percent) {
+    selectedDiscountPercent = parseFloat(percent);
+    
+    // Validate
+    if (isNaN(selectedDiscountPercent) || selectedDiscountPercent <= 0 || selectedDiscountPercent > 100) {
+        document.getElementById('discountPreview').style.display = 'none';
+        document.getElementById('confirmDiscountBtn').disabled = true;
+        return;
+    }
+    
+    // Update button states
+    document.querySelectorAll('.discount-option-btn').forEach(btn => {
+        if (parseFloat(btn.dataset.percent) === selectedDiscountPercent) {
+            btn.classList.add('selected');
+        } else {
+            btn.classList.remove('selected');
+        }
+    });
+    
+    // If custom input, clear button selection
+    if (percent !== 2 && percent !== 5 && percent !== 10) {
+        document.querySelectorAll('.discount-option-btn').forEach(btn => {
+            btn.classList.remove('selected');
+        });
+    }
+    
+    // Calculate preview
+    const discountAmount = currentPrice * (selectedDiscountPercent / 100);
+    const newPrice = currentPrice - discountAmount;
+    
+    // Update preview
+    document.getElementById('previewOriginal').textContent = '₦' + currentPrice.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    document.getElementById('previewPercent').textContent = selectedDiscountPercent.toFixed(1);
+    document.getElementById('previewDiscount').textContent = '-₦' + discountAmount.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    document.getElementById('previewNewPrice').textContent = '₦' + newPrice.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    
+    // Show preview and enable confirm button
+    document.getElementById('discountPreview').style.display = 'block';
+    document.getElementById('confirmDiscountBtn').disabled = false;
+}
+
+/**
+ * Apply the discount to current quote
+ */
+async function applyDiscount() {
+    if (selectedDiscountPercent <= 0) {
+        showNotification('Please select a discount percentage', 'warning');
+        return;
+    }
+    
+    try {
+        // Calculate discount
+        const response = await fetch('/api/calculate-discount', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                current_price: currentPrice,
+                discount_percentage: selectedDiscountPercent
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Check if this is a bulk order
+            const isBulkOrder = currentJobData && currentJobData.isBulkOrder;
+            
+            if (isBulkOrder) {
+                // Apply discount to bulk order
+                applyDiscountToBulkOrder(result);
+            } else {
+                // Apply discount to single quote
+                applyDiscountToSingleQuote(result);
+            }
+            
+            // Close modal
+            closeDiscountModal();
+            
+            // Show success notification
+            showNotification(`✅ ${result.discount_percentage}% discount applied! New total: ₦${result.new_price.toLocaleString()}`, 'success');
+            
+        } else {
+            showNotification(result.error || 'Failed to apply discount', 'error');
+        }
+        
+    } catch (error) {
+        console.error('Error applying discount:', error);
+        showNotification('Error applying discount: ' + error.message, 'error');
+    }
+}
+
+/**
+ * Apply discount to single quote
+ */
+function applyDiscountToSingleQuote(result) {
+    const originalPrice = currentPrice;
+    currentPrice = result.new_price;
+    
+    // Store discount info in currentJobData
+    currentJobData.discount_applied = true;
+    currentJobData.discount_percentage = result.discount_percentage;
+    currentJobData.discount_amount = result.discount_amount;
+    currentJobData.original_price = result.original_price;
+    
+    // Update UI
+    document.getElementById('priceDisplay').textContent = '₦' + result.new_price.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    
+    // Show discount breakdown
+    document.getElementById('originalPriceDisplay').textContent = '₦' + result.original_price.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    document.getElementById('discountPercentDisplay').textContent = result.discount_percentage.toFixed(1);
+    document.getElementById('discountAmountDisplay').textContent = '-₦' + result.discount_amount.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    document.getElementById('finalPriceDisplay').textContent = '₦' + result.new_price.toLocaleString('en-NG', {minimumFractionDigits: 2});
+    
+    document.getElementById('discountBreakdown').style.display = 'block';
+    
+    // Disable the discount button
+    document.getElementById('applyDiscountBtn').disabled = true;
+    document.getElementById('applyDiscountBtn').textContent = '✓ Discount Applied';
+    document.getElementById('applyDiscountBtn').style.opacity = '0.6';
+    
+    // Mark as applied
+    discountAppliedToCurrentQuote = true;
+}
+
+/**
+ * Apply discount to bulk order
+ */
+function applyDiscountToBulkOrder(result) {
+    // Store discount info globally for bulk order
+    window.bulkOrderDiscount = {
+        applied: true,
+        discount_percentage: result.discount_percentage,
+        discount_amount: result.discount_amount,
+        original_price: result.original_price,
+        new_price: result.new_price
+    };
+    
+    // Update bulk order display
+    updateBulkItemsDisplay();
+    
+    // Mark as applied
+    discountAppliedToCurrentQuote = true;
+}
+
+// ========================================
+// BULK ORDER DISCOUNT BUTTON
+// ========================================
+
+/**
+ * Show discount modal for bulk order
+ * This replaces the single quote discount logic for bulk
+ */
+function showBulkDiscountModal() {
+    // Check if there are items
+    if (bulkItems.length === 0) {
+        showNotification('Please add items to the bulk order first!', 'warning');
+        return;
+    }
+    
+    // Calculate total price
+    const totalPrice = bulkItems.reduce((sum, item) => sum + (item.price || 0), 0);
+    
+    // Check minimum amount
+    if (totalPrice < 10500) {
+        showNotification(`Discount cannot be applied. Minimum amount: ₦10,500. Current total: ₦${totalPrice.toLocaleString()}`, 'error');
+        return;
+    }
+    
+    // Set current price for discount calculation
+    currentPrice = totalPrice;
+    currentJobData = { isBulkOrder: true }; // Flag this as bulk order
+    discountAppliedToCurrentQuote = false;
+    
+    // Reset modal state
+    selectedDiscountPercent = 0;
+    document.getElementById('customDiscountInput').value = '';
+    document.querySelectorAll('.discount-option-btn').forEach(btn => {
+        btn.classList.remove('selected');
+    });
+    document.getElementById('discountPreview').style.display = 'none';
+    document.getElementById('confirmDiscountBtn').disabled = true;
+    
+    // Show modal
+    document.getElementById('discountModal').style.display = 'flex';
 }

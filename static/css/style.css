@@ -747,6 +747,42 @@ input:focus, select:focus {
     box-shadow: 0 10px 25px rgba(155, 155, 155, 0.4);
 }
 
+/*================================
+DISCOUNT OPTION BUTTONS
+==================================*/
+.discount-option-btn {
+    padding: 15px;
+    border: 2px solid #e0e0e0;
+    background: white;
+    border-radius: 8px;
+    font-size: 1.1em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.discount-option-btn:hover {
+    border-color: #28a745;
+    background: #f0f9f4;
+}
+
+.discount-option-btn.selected {
+    border-color: #28a745;
+    background: linear-gradient(135deg, #28a745 0%, #20963b 100%);
+    color: white;
+}
+
+.btn-discount:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(40, 167, 69, 0.4);
+}
+
+.btn-discount:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
 /* ========================================
    ADMIN DASHBOARD STYLES
    ======================================== */

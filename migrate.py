@@ -2,63 +2,57 @@ from app import app, db
 from sqlalchemy import text
 
 def run_migration():
-    """Add color and price_per_sheet columns to existing tables"""
+    """Add discount tracking fields to Quote table"""
     
     with app.app_context():
-        print("Starting Phase 1 migration...")
+        print("Starting Phase 2 (Discount System) migration...")
         
         try:
-            # Check if columns already exist (prevent duplicate migration)
+            # Check if columns already exist
             inspector = db.inspect(db.engine)
-            
-            # 1. Add price_per_sheet to Inventory table
-            inventory_columns = [col['name'] for col in inspector.get_columns('inventory')]
-            
-            if 'price_per_sheet' not in inventory_columns:
-                print("Adding price_per_sheet to Inventory table...")
-                db.session.execute(text(
-                    "ALTER TABLE inventory ADD COLUMN price_per_sheet FLOAT DEFAULT 0"
-                ))
-                print("✅ price_per_sheet column added")
-            else:
-                print("⚠️ price_per_sheet already exists, skipping")
-            
-            # 2. Add material_color to Quote table
             quote_columns = [col['name'] for col in inspector.get_columns('quote')]
             
-            if 'material_color' not in quote_columns:
-                print("Adding material_color to Quote table...")
+            migrations = []
+            
+            # 1. Add discount_applied field
+            if 'discount_applied' not in quote_columns:
+                print("Adding discount_applied to Quote table...")
                 db.session.execute(text(
-                    "ALTER TABLE quote ADD COLUMN material_color VARCHAR(50)"
+                    "ALTER TABLE quote ADD COLUMN discount_applied BOOLEAN DEFAULT FALSE"
                 ))
-                print("✅ material_color column added to Quote")
+                migrations.append('discount_applied')
             else:
-                print("⚠️ material_color already exists in Quote, skipping")
+                print("⚠️ discount_applied already exists, skipping")
             
-            # 3. Add material_color to QuoteItem table
-            quote_item_columns = [col['name'] for col in inspector.get_columns('quote_item')]
-            
-            if 'material_color' not in quote_item_columns:
-                print("Adding material_color to QuoteItem table...")
+            # 2. Add discount_percentage field
+            if 'discount_percentage' not in quote_columns:
+                print("Adding discount_percentage to Quote table...")
                 db.session.execute(text(
-                    "ALTER TABLE quote_item ADD COLUMN material_color VARCHAR(50)"
+                    "ALTER TABLE quote ADD COLUMN discount_percentage FLOAT DEFAULT 0"
                 ))
-                print("✅ material_color column added to QuoteItem")
+                migrations.append('discount_percentage')
             else:
-                print("⚠️ material_color already exists in QuoteItem, skipping")
+                print("⚠️ discount_percentage already exists, skipping")
             
-            # 4. Update existing inventory records (set default price_per_sheet if NULL)
-            print("Updating existing inventory records...")
-            db.session.execute(text(
-                """
-                UPDATE inventory 
-                SET price_per_sheet = CASE 
-                    WHEN price_per_sq_ft > 0 THEN (sheet_width_mm * sheet_height_mm / 92903.0) * price_per_sq_ft
-                    ELSE 0 
-                END
-                WHERE price_per_sheet IS NULL OR price_per_sheet = 0
-                """
-            ))
+            # 3. Add discount_amount field
+            if 'discount_amount' not in quote_columns:
+                print("Adding discount_amount to Quote table...")
+                db.session.execute(text(
+                    "ALTER TABLE quote ADD COLUMN discount_amount FLOAT DEFAULT 0"
+                ))
+                migrations.append('discount_amount')
+            else:
+                print("⚠️ discount_amount already exists, skipping")
+            
+            # 4. Add original_price field
+            if 'original_price' not in quote_columns:
+                print("Adding original_price to Quote table...")
+                db.session.execute(text(
+                    "ALTER TABLE quote ADD COLUMN original_price FLOAT"
+                ))
+                migrations.append('original_price')
+            else:
+                print("⚠️ original_price already exists, skipping")
             
             # Commit all changes
             db.session.commit()
@@ -66,11 +60,15 @@ def run_migration():
             print("\n" + "="*50)
             print("✅ MIGRATION COMPLETED SUCCESSFULLY!")
             print("="*50)
-            print("\nNew columns added:")
-            print("  • inventory.price_per_sheet")
-            print("  • quote.material_color")
-            print("  • quote_item.material_color")
-            print("\nYou can now proceed with the code updates!")
+            
+            if migrations:
+                print("\nNew columns added to Quote table:")
+                for col in migrations:
+                    print(f"  • {col}")
+            else:
+                print("\nAll columns already exist. No changes made.")
+            
+            print("\nDiscount system database ready!")
             
         except Exception as e:
             db.session.rollback()
@@ -78,7 +76,6 @@ def run_migration():
             print("❌ MIGRATION FAILED!")
             print("="*50)
             print(f"Error: {e}")
-            print("\nPlease check the error and try again.")
             import traceback
             print(traceback.format_exc())
 
