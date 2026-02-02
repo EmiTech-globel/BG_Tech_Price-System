@@ -33,11 +33,17 @@
         
         <!-- Tabs Navigation -->
         <div class="tabs">
-            <div class="tab active" onclick="showTab('quotes')">
+            <div class="tab active" onclick="showTab('overview')">
+                📊 Overview
+            </div>
+            <div class="tab" onclick="showTab('quotes')">
                 📋 Saved Quotes
             </div>
             <div class="tab" onclick="showTab('inventory')">
                 🏭 Inventory
+            </div>
+            <div class="tab" onclick="showTab('reports')">
+                📑 Reports
             </div>
             <div class="tab" onclick="showTab('addjob')">
                 ➕ Training Data
@@ -45,8 +51,54 @@
         </div>
         
         <div class="content">
+            <div id="overview" class="tab-content active">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px;">
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border-left: 5px solid #E89D3C;">
+                        <div style="color: #999; font-size: 0.9em; margin-bottom: 5px;">Quoted Today</div>
+                        <div style="font-size: 1.8em; font-weight: bold; color: #333;" id="stat_today_value">₦0.00</div>
+                        <div style="font-size: 0.8em; color: #4CAF50; margin-top: 5px;">Based on generated quotes</div>
+                    </div>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border-left: 5px solid #2196F3;">
+                        <div style="color: #999; font-size: 0.9em; margin-bottom: 5px;">Orders (7 Days)</div>
+                        <div style="font-size: 1.8em; font-weight: bold; color: #333;" id="stat_week_orders">0</div>
+                        <div style="font-size: 0.8em; color: #2196F3; margin-top: 5px;">Quote volume</div>
+                    </div>
+                    
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border-left: 5px solid #F44336;">
+                        <div style="color: #999; font-size: 0.9em; margin-bottom: 5px;">Low Stock Items</div>
+                        <div style="font-size: 1.8em; font-weight: bold; color: #333;" id="stat_low_stock">0</div>
+                        <div style="font-size: 0.8em; color: #F44336; margin-top: 5px;">Items below 5 sheets</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                        <h3 style="margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Recent Activity</h3>
+                        <div id="activityFeed">
+                            <div class="loading"><div class="spinner"></div></div>
+                        </div>
+                    </div>
+
+                    <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); height: fit-content;">
+                        <h3 style="margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Quick Actions</h3>
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button onclick="showTab('inventory'); toggleInventoryForm()" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
+                                📦 Add New Stock
+                            </button>
+                            <button onclick="showTab('addjob')" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
+                                🧠 Add Training Data
+                            </button>
+                            <button onclick="window.location.href='/'" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
+                                🖩 Create New Quote
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <!-- SAVED QUOTES TAB -->
-            <div id="quotes" class="tab-content active">
+            <div id="quotes" class="tab-content">
                 <div class="row" style="margin-bottom: 20px;">
                     <div class="form-group">
                         <label>Search Quotes</label>
@@ -103,12 +155,12 @@
                     
                     <div class="form-group">
                         <label>Sheet Width (mm) *</label>
-                        <input type="number" id="inv_width" placeholder="e.g. 1220">
+                        <input type="number" id="inv_width" placeholder="e.g. 1219.2">
                     </div>
                     
                     <div class="form-group">
                         <label>Sheet Height (mm) *</label>
-                        <input type="number" id="inv_height" placeholder="e.g. 2440">
+                        <input type="number" id="inv_height" placeholder="e.g. 2438.4">
                     </div>
                     
                     <div class="form-group">
@@ -116,14 +168,12 @@
                         <input type="number" id="inv_quantity" placeholder="e.g. 10 (In) or -5 (Out)">
                     </div>
                     
-                    <!-- NEW: Price Per Sheet -->
                     <div class="form-group">
                         <label>Price per Full Sheet (₦) *</label>
                         <input type="number" id="inv_price_sheet" placeholder="e.g. 15000">
                         <small style="color: #666;">Total cost for one full sheet</small>
                     </div>
                     
-                    <!-- UPDATED: Price Per Sq Ft (now optional) -->
                     <div class="form-group">
                         <label>Price per Sq. Ft (₦)</label>
                         <input type="number" id="inv_price" placeholder="e.g. 1800 (optional)">
@@ -167,6 +217,41 @@
              </div>
            </div>
             
+           <!-- REPORT TAB -->
+           <div id="reports" class="tab-content">
+                <h2 style="margin-bottom: 20px;">Generate Business Reports</h2>
+                
+                <div style="background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); width: 100%;">
+                    <div class="form-group">
+                        <label>Report Type</label>
+                        <select id="reportType" class="form-control" style="width: 100%; padding: 10px; margin-bottom: 15px;">
+                            <option value="revenue">💰 Revenue Report (Quotes & Income)</option>
+                            <option value="material_usage">📉 Material Usage (Stock Out)</option>
+                            <option value="inventory_health">🏥 Inventory Health (Stock Levels)</option>
+                        </select>
+                    </div>
+
+                    <div class="row" style="display: flex; gap: 20px; margin-bottom: 20px;">
+                        <div class="form-group" style="flex: 1;">
+                            <label>Start Date</label>
+                            <input type="date" id="reportStartDate" style="width: 100%; padding: 10px;">
+                        </div>
+                        <div class="form-group" style="flex: 1;">
+                            <label>End Date</label>
+                            <input type="date" id="reportEndDate" style="width: 100%; padding: 10px;">
+                        </div>
+                    </div>
+
+                    <div style="background: #FFF8F0; padding: 15px; border-left: 4px solid #E89D3C; margin-bottom: 20px; font-size: 0.9em; color: #666;">
+                        <p id="reportDesc">Generates a detailed PDF listing all approved quotes and total revenue for the selected period.</p>
+                    </div>
+
+                    <button type="button" onclick="event.preventDefault(); downloadReport()" class="btn" style="width: 100%; justify-content: center; font-size: 1.1em;">
+                        📥 Download PDF Report
+                    </button>
+                </div>
+            </div>
+
             <!-- ADD JOB TAB -->
                 <div id="addjob" class="tab-content">
                     <div class="info-box">

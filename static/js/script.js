@@ -197,19 +197,11 @@ let bulkItemCounter = 0;
 // ========================================
 
 function showTab(tabName) {
-    console.log("Switching to tab:", tabName);
+    // Remove active class from all tabs and contents
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
     
-    // Remove active class from all tabs
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.classList.remove('active');
-    });
-    
-    // Remove active class from all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    
-    // Add active class to clicked tab and corresponding content
+    // Add active class to clicked tab and content
     const activeTab = document.querySelector(`.tab[onclick*="${tabName}"]`);
     const activeContent = document.getElementById(tabName);
     
@@ -218,8 +210,11 @@ function showTab(tabName) {
         activeContent.classList.add('active');
     }
     
-    // Hide result box when switching tabs
-    document.getElementById('resultBox').classList.remove('show');
+    // Hide result box when switching tabs (only on main page)
+    const resultBox = document.getElementById('resultBox');
+    if (resultBox) {
+        resultBox.classList.remove('show');
+    }
     
     // Load data for specific tabs
     if (tabName === 'quotes') {
@@ -238,31 +233,34 @@ function showTab(tabName) {
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
 
-uploadArea.addEventListener('click', () => fileInput.click());
+// Only attach listeners if elements exist (not on admin pages)
+if (uploadArea && fileInput) {
+    uploadArea.addEventListener('click', () => fileInput.click());
 
-uploadArea.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    uploadArea.classList.add('dragover');
-});
+    uploadArea.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
 
-uploadArea.addEventListener('dragleave', () => {
-    uploadArea.classList.remove('dragover');
-});
+    uploadArea.addEventListener('dragleave', () => {
+        uploadArea.classList.remove('dragover');
+    });
 
-uploadArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    uploadArea.classList.remove('dragover');
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-        handleFile(files[0]);
-    }
-});
+    uploadArea.addEventListener('drop', (e) => {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFile(files[0]);
+        }
+    });
 
-fileInput.addEventListener('change', (e) => {
-    if (e.target.files.length > 0) {
-        handleFile(e.target.files[0]);
-    }
-});
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length > 0) {
+            handleFile(e.target.files[0]);
+        }
+    });
+}
 
 // ========================================
 // FILE UPLOAD FUNCTIONS

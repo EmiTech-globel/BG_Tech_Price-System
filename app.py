@@ -4,7 +4,7 @@ BrainGain Tech Innovation Solutions
 Local web application for automatic job pricing
 """
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, make_response
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 import pandas as pd
@@ -1727,6 +1727,227 @@ def admin_dashboard():
     """Admin dashboard - protected route"""
     user_email = session.get('user_email', 'Admin')
     return render_template('admin_dashboard.html', user_email=user_email)
+
+@app.route('/api/admin/stats', methods=['GET'])
+@requires_auth
+def admin_stats():
+    """Get dashboard statistics and activity feed"""
+    try:
+        now = datetime.utcnow()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_start = now - timedelta(days=7)
+
+        # 1. Today's "Revenue" (Quoted Value)
+        today_quotes = Quote.query.filter(Quote.created_at >= today_start).all()
+        today_value = sum(q.quoted_price for q in today_quotes)
+
+        # 2. Weekly Orders Count
+        week_orders = Quote.query.filter(Quote.created_at >= week_start).count()
+
+        # 3. Low Stock Alert (Threshold: < 5 sheets)
+        low_stock_count = Inventory.query.filter(Inventory.quantity_on_hand < 5).count()
+
+        # 4. Recent Activity Feed (Merge Quotes & Inventory)
+        recent_quotes = Quote.query.order_by(Quote.created_at.desc()).limit(5).all()
+        recent_txns = InventoryTransaction.query.order_by(InventoryTransaction.created_at.desc()).limit(5).all()
+
+        activities = []
+        
+        # Process Quotes
+        for q in recent_quotes:
+            activities.append({
+                'id': f"q_{q.id}",
+                'type': 'quote',
+                'title': f"New Quote #{q.quote_number}",
+                'desc': f"{q.customer_name or 'Guest'} - ₦{q.quoted_price:,.2f}",
+                'time': q.created_at,
+                'icon': '📝',
+                'color': '#E89D3C'
+            })
+
+        # Process Inventory
+        for t in recent_txns:
+            # Safely get material name
+            mat_name = "Unknown Material"
+            if t.item:
+                mat_name = f"{t.item.material_name} {t.item.thickness_mm}mm ({t.item.color or 'N/A'})"
+            
+            action_emoji = "📥" if t.transaction_type == 'stock_in' else "📤"
+            action_text = "Restocked" if t.transaction_type == 'stock_in' else "Used"
+            
+            activities.append({
+                'id': f"t_{t.id}",
+                'type': 'stock',
+                'title': f"{action_emoji} Stock Update",
+                'desc': f"{action_text} {abs(t.change_amount)} sheets of {mat_name}",
+                'time': t.created_at,
+                'icon': '📦',
+                'color': '#4CAF50' if t.transaction_type == 'stock_in' else '#F44336'
+            })
+
+        # Sort by time descending and take top 10
+        activities.sort(key=lambda x: x['time'], reverse=True)
+        final_activity = activities[:10]
+
+        # Convert datetimes to string for JSON
+        for act in final_activity:
+            act['time_str'] = act['time'].strftime('%H:%M') if act['time'].date() == now.date() else act['time'].strftime('%b %d')
+            del act['time'] # Remove non-serializable object
+
+        return jsonify({
+            'success': True,
+            'stats': {
+                'today_value': today_value,
+                'week_orders': week_orders,
+                'low_stock': low_stock_count
+            },
+            'activity': final_activity
+        })
+
+    except Exception as e:
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ========================================
+# REPORT GENERATION ROUTES
+# ========================================
+
+@app.route('/api/admin/report/download')
+@requires_auth
+def download_report():
+    """Generate and download PDF reports"""
+    try:
+        report_type = request.args.get('type')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        
+        # Parse dates
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            # Set end date to end of day
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        else:
+            # Default to last 30 days
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+
+        # Buffer for PDF
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # --- Header Section ---
+        elements.append(Paragraph(f"BrainGain Tech - {report_type.replace('_', ' ').title()} Report", styles['Heading1']))
+        elements.append(Paragraph(f"Period: {start_date.strftime('%d %b %Y')} to {end_date.strftime('%d %b %Y')}", styles['Normal']))
+        elements.append(Spacer(1, 10*mm))
+        
+        # --- Report Logic ---
+        
+        if report_type == 'revenue':
+            # Query Quotes
+            quotes = Quote.query.filter(Quote.created_at.between(start_date, end_date)).order_by(Quote.created_at.desc()).all()
+            
+            total_revenue = sum(q.quoted_price for q in quotes)
+            total_discounts = sum(q.discount_amount for q in quotes if q.discount_applied)
+            
+            # Summary Box
+            elements.append(Paragraph(f"Total Revenue: ₦{total_revenue:,.2f}", styles['Heading2']))
+            elements.append(Paragraph(f"Total Orders: {len(quotes)}", styles['Heading3']))
+            elements.append(Spacer(1, 5*mm))
+            
+            # Table Data
+            data = [['Date', 'Quote #', 'Customer', 'Material', 'Amount']]
+            for q in quotes:
+                data.append([
+                    q.created_at.strftime('%Y-%m-%d'),
+                    q.quote_number,
+                    q.customer_name or 'Guest',
+                    f"{q.material} {q.thickness_mm}mm",
+                    f"₦{q.quoted_price:,.2f}"
+                ])
+                
+            col_widths = [35*mm, 35*mm, 45*mm, 40*mm, 30*mm]
+            
+        elif report_type == 'inventory_health':
+            # Snapshot of current inventory (dates ignored for current status)
+            items = Inventory.query.order_by(Inventory.material_name).all()
+            
+            low_stock = [i for i in items if i.quantity_on_hand < 5]
+            total_value = sum(i.quantity_on_hand * i.price_per_sheet for i in items)
+            
+            elements.append(Paragraph(f"Total Inventory Value: ₦{total_value:,.2f}", styles['Heading2']))
+            if low_stock:
+                elements.append(Paragraph(f"⚠️ Low Stock Alerts: {len(low_stock)} items", styles['Heading3']))
+            elements.append(Spacer(1, 5*mm))
+            
+            data = [['Material', 'Color', 'Size (mm)', 'Stock', 'Status']]
+            for i in items:
+                status = "Low Stock" if i.quantity_on_hand < 5 else "OK"
+                data.append([
+                    f"{i.material_name} {i.thickness_mm}mm",
+                    i.color or 'N/A',
+                    f"{i.sheet_width_mm}x{i.sheet_height_mm}",
+                    str(i.quantity_on_hand),
+                    status
+                ])
+            col_widths = [50*mm, 30*mm, 40*mm, 25*mm, 30*mm]
+
+        elif report_type == 'material_usage':
+            # Query Stock Out Transactions
+            txns = InventoryTransaction.query.join(Inventory).filter(
+                InventoryTransaction.created_at.between(start_date, end_date),
+                InventoryTransaction.transaction_type == 'stock_out'
+            ).all()
+            
+            elements.append(Paragraph("Material Consumption Summary", styles['Heading2']))
+            elements.append(Spacer(1, 5*mm))
+            
+            data = [['Date', 'Material', 'Color', 'Used', 'Note']]
+            for t in txns:
+                data.append([
+                    t.created_at.strftime('%Y-%m-%d'),
+                    f"{t.item.material_name} {t.item.thickness_mm}mm",
+                    t.item.color or 'N/A',
+                    str(abs(t.change_amount)),
+                    t.note or '-'
+                ])
+            col_widths = [35*mm, 50*mm, 30*mm, 20*mm, 50*mm]
+
+        else:
+            return jsonify({'error': 'Invalid report type'}), 400
+
+        # --- Build Table ---
+        if len(data) > 1:
+            table = Table(data, colWidths=col_widths)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ]))
+            elements.append(table)
+        else:
+            elements.append(Paragraph("No records found for this period.", styles['Normal']))
+
+        # --- Finalize ---
+        doc.build(elements)
+        pdf_data = buffer.getvalue()
+        buffer.close()
+
+        response = make_response(pdf_data)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename=Report_{report_type}_{datetime.now().strftime("%Y%m%d")}.pdf'
+        return response
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 # ========================================
 # DXF ANALYSIS ROUTE
