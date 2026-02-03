@@ -116,13 +116,13 @@ function downloadReport() {
     const end = document.getElementById('reportEndDate').value;
     
     if (!start || !end) {
-        alert("Please select a valid date range.");
+        showNotification("Please select a valid date range.", 'error');
         return;
     }
 
     const btn = document.querySelector('#reports button');
     if (!btn) {
-        alert("Download button not found");
+        showNotification("Download button not found", 'error');
         return;
     }
     
@@ -154,12 +154,76 @@ function downloadReport() {
         
         btn.innerHTML = originalText;
         btn.disabled = false;
+        showNotification("Report downloaded successfully!", 'success');
     })
     .catch(err => {
-        alert("Error generating report: " + err.message);
+        showNotification("Error generating report: " + err.message, 'error');
         btn.innerHTML = originalText;
         btn.disabled = false;
     });
+}
+
+// Load current settings when the page loads
+async function loadSettings() {
+    try {
+        const response = await fetch('/api/admin/settings', {
+            headers: { 'Authorization': 'Bearer ' + sessionStorage.getItem('access_token') }
+        });
+        const data = await response.json();
+        if (data.success) {
+            document.getElementById('setting_email').value = data.report_email;
+            document.getElementById('setting_time').value = data.report_send_time;
+        }
+    } catch (error) {
+        console.error('Error loading settings:', error);
+    }
+}
+
+async function saveSettings() {
+    const email = document.getElementById('setting_email').value;
+    const time = document.getElementById('setting_time').value;
+
+    try {
+        const response = await fetch('/api/admin/settings', {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + sessionStorage.getItem('access_token') 
+            },
+            body: JSON.stringify({ report_email: email, report_send_time: time })
+        });
+        const data = await response.json();
+        if (data.success) {
+            showNotification('Settings saved and schedule updated.', 'success');
+        }
+    } catch (error) {
+        showNotification('Error saving settings.', 'error');
+    }
+}
+
+async function testEmail() {
+    const btn = document.querySelector("button[onclick='testEmail()']");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = "⏳ Sending...";
+    btn.disabled = true;
+
+    try {
+        const response = await fetch('/api/admin/settings/test-email', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + sessionStorage.getItem('access_token') }
+        });
+        const data = await response.json();
+        if (data.success) {
+            showNotification('Test email sent successfully! Check your inbox.', 'success');
+        } else {
+            throw new Error(data.error);
+        }
+    } catch (error) {
+        showNotification('Failed to send test email: ' + error.message, 'error');
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
 }
 
 // ========================================
@@ -176,4 +240,5 @@ window.addEventListener('load', () => {
     loadInventory();
     updateTrainingStats();
     initReportDates();
+    loadSettings();
 });

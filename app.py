@@ -26,9 +26,15 @@ from datetime import datetime
 from dotenv import load_dotenv
 from functools import wraps
 from flask import Response, request
+from flask_apscheduler import APScheduler
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from functools import wraps
 from flask import request, jsonify, session, redirect, url_for
 from supabase import create_client, Client
+import ssl
 import os
 from datetime import timedelta
 
@@ -381,6 +387,22 @@ try:
 except Exception as e:
     print(f"Error extracting columns: {e}")
     columns = None
+
+# ========================================
+# APPLICATION SETTINGS MODEL
+# ========================================
+class Settings(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    report_email = db.Column(db.String(255), default='emmawhisli@gmail.com')
+    report_send_time = db.Column(db.String(10), default='18:30')
+    email_reports_enabled = db.Column(db.Boolean, default=True)
+
+# Create table if it doesn't exist
+with app.app_context():
+    db.create_all()
+    if not Settings.query.first():
+        db.session.add(Settings(report_email='emmawhisli@gmail.com'))
+        db.session.commit()
 
 # ========================================
 # SVG FILE ANALYZER FUNCTIONS
@@ -1809,30 +1831,286 @@ def admin_stats():
         print(traceback.format_exc())
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ========================================
-# REPORT GENERATION ROUTES
-# ========================================
-
-@app.route('/api/admin/report/download')
+@app.route('/api/admin/settings', methods=['GET', 'POST'])
 @requires_auth
-def download_report():
-    """Generate and download PDF reports"""
-    try:
-        report_type = request.args.get('type')
-        start_date_str = request.args.get('start_date')
-        end_date_str = request.args.get('end_date')
+def manage_settings():
+    settings = Settings.query.first()
+    if request.method == 'POST':
+        data = request.json
+        settings.report_email = data.get('report_email', settings.report_email)
+        settings.report_send_time = data.get('report_send_time', settings.report_send_time)
+        db.session.commit()
         
-        # Parse dates
-        if start_date_str and end_date_str:
-            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-            # Set end date to end of day
-            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
-        else:
-            # Default to last 30 days
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
+        # Reschedule job if time changed
+        hour, minute = settings.report_send_time.split(':')
+        scheduler.modify_job('do_daily_report', trigger='cron', hour=int(hour), minute=int(minute))
+        
+        return jsonify({'success': True, 'message': 'Settings saved'})
+    
+    return jsonify({
+        'success': True, 
+        'report_email': settings.report_email, 
+        'report_send_time': settings.report_send_time
+    })
 
-        # Buffer for PDF
+@app.route('/api/admin/settings/test-email', methods=['POST'])
+@requires_auth
+def test_email_route():
+    """Trigger a test email immediately with diagnostic info"""
+    try:
+        # Use settings email if set, otherwise fall back to .env
+        settings = Settings.query.first()
+        admin_email = settings.report_email if settings and settings.report_email else os.getenv("ADMIN_REPORT_EMAIL")
+        email_user = os.getenv("EMAIL_USER")
+        email_pass = os.getenv("EMAIL_PASS")
+
+        # Validate credentials exist
+        if not admin_email:
+            return jsonify({'success': False, 'error': 'Recipient email not configured. Set in Admin Settings or ADMIN_REPORT_EMAIL in .env'}), 400
+        if not email_user:
+            return jsonify({'success': False, 'error': 'EMAIL_USER not set in environment'}), 400
+        if not email_pass:
+            return jsonify({'success': False, 'error': 'EMAIL_PASS not set in environment'}), 400
+
+        # Log masked credentials for debugging
+        masked_user = email_user[:3] + "***" + email_user[-10:] if len(email_user) > 13 else "***"
+        app.logger.info(f"Attempting to send email from {masked_user} to {admin_email}")
+
+        result = send_daily_report()
+        # send_daily_report returns dicts for success/error; return JSON response
+        if isinstance(result, dict):
+            return jsonify(result)
+        return jsonify({'success': True, 'message': 'Test email queued for sending'})
+    except Exception as e:
+        app.logger.exception("Test email failed")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/admin/settings/email-config-check', methods=['GET'])
+@requires_auth
+def check_email_config():
+    """Diagnostic endpoint to verify email configuration is loaded"""
+    # Prefer Settings.report_email when available
+    settings = Settings.query.first()
+    env_admin = os.getenv("ADMIN_REPORT_EMAIL")
+    email_user = os.getenv("EMAIL_USER")
+    email_pass = os.getenv("EMAIL_PASS")
+
+    configured_recipient = settings.report_email if settings and settings.report_email else env_admin
+
+    # Mask sensitive info for security
+    def mask_email(e):
+        return (e[:3] + "***" + e[-5:]) if e and len(e) > 8 else (e or "❌ NOT SET")
+
+    admin_email_masked = mask_email(configured_recipient)
+    email_user_masked = (email_user[:3] + "***" + email_user[-10:]) if email_user and len(email_user) > 13 else (email_user or "❌ NOT SET")
+    email_pass_masked = "✅ SET (length: " + str(len(email_pass)) + ")" if email_pass else "❌ NOT SET"
+
+    return jsonify({
+        'admin_email': admin_email_masked,
+        'email_user': email_user_masked,
+        'email_pass': email_pass_masked,
+        'all_set': bool(configured_recipient and email_user and email_pass),
+        'source': 'settings' if settings and settings.report_email else 'env',
+        'help': {
+            'step_1': 'Open Admin Settings and set Recipient Email, or set ADMIN_REPORT_EMAIL in .env',
+            'step_2': 'Ensure EMAIL_USER and EMAIL_PASS are set in environment (.env)',
+            'step_3': 'Use App Password if Gmail 2FA is enabled',
+            'step_4': 'Restart app after changing .env or settings'
+        }
+    })
+
+# ========================================
+# REPORT GENERATION HELPER FUNCTION
+# ========================================
+
+def generate_comprehensive_pdf_report(start_date, end_date):
+    """
+    Generate a comprehensive PDF report with all three report types:
+    - Revenue Report
+    - Inventory Health
+    - Material Usage
+    Returns: BytesIO buffer containing combined PDF data, or None on error
+    """
+    try:
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Title Page
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            textColor=colors.HexColor('#E89D3C'),
+            alignment=TA_CENTER,
+            spaceAfter=30
+        )
+        
+        elements.append(Spacer(1, 20*mm))
+        elements.append(Paragraph("BrainGain Tech Innovation Solutions", title_style))
+        elements.append(Paragraph("Daily Comprehensive Business Report", styles['Heading2']))
+        elements.append(Paragraph(f"Period: {start_date.strftime('%B %d, %Y')} to {end_date.strftime('%B %d, %Y')}", styles['Normal']))
+        elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        elements.append(Spacer(1, 15*mm))
+        
+        # ===== REVENUE REPORT SECTION =====
+        elements.append(Paragraph("1. Revenue Report", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        quotes = Quote.query.filter(Quote.created_at.between(start_date, end_date)).order_by(Quote.created_at.desc()).all()
+        total_revenue = sum(q.quoted_price for q in quotes)
+        total_discounts = sum(q.discount_amount for q in quotes if q.discount_applied)
+        
+        elements.append(Paragraph(f"<b>Total Revenue:</b> ₦{total_revenue:,.2f}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Total Orders:</b> {len(quotes)}", styles['Normal']))
+        if total_discounts > 0:
+            elements.append(Paragraph(f"<b>Total Discounts Applied:</b> ₦{total_discounts:,.2f}", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        # Revenue Table
+        revenue_data = [['Date', 'Quote #', 'Customer', 'Material', 'Amount']]
+        for q in quotes[:20]:  # Limit to last 20 for readability
+            revenue_data.append([
+                q.created_at.strftime('%Y-%m-%d'),
+                q.quote_number,
+                q.customer_name or 'Guest',
+                f"{q.material} {q.thickness_mm}mm",
+                f"₦{q.quoted_price:,.2f}"
+            ])
+        
+        if len(revenue_data) > 1:
+            revenue_table = Table(revenue_data, colWidths=[30*mm, 30*mm, 40*mm, 35*mm, 30*mm])
+            revenue_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F0F0F0')])
+            ]))
+            elements.append(revenue_table)
+        else:
+            elements.append(Paragraph("No revenue records for this period.", styles['Normal']))
+        
+        elements.append(Spacer(1, 15*mm))
+        elements.append(Paragraph("", styles['Heading3']))  # Page break equivalent
+        
+        # ===== INVENTORY HEALTH SECTION =====
+        elements.append(Paragraph("2. Inventory Health Status", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        items = Inventory.query.order_by(Inventory.material_name).all()
+        low_stock = [i for i in items if i.quantity_on_hand < 5]
+        total_value = sum(i.quantity_on_hand * i.price_per_sheet for i in items)
+        
+        elements.append(Paragraph(f"<b>Total Inventory Value:</b> ₦{total_value:,.2f}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Total Items:</b> {len(items)}", styles['Normal']))
+        if low_stock:
+            elements.append(Paragraph(f"<b>⚠️ Low Stock Alerts:</b> {len(low_stock)} items need restocking", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        # Inventory Table
+        inventory_data = [['Material', 'Color', 'Size (mm)', 'Stock', 'Status']]
+        for i in items:
+            status = "🔴 Low" if i.quantity_on_hand < 5 else "🟢 OK"
+            inventory_data.append([
+                f"{i.material_name} {i.thickness_mm}mm",
+                i.color or 'N/A',
+                f"{i.sheet_width_mm}x{i.sheet_height_mm}",
+                str(i.quantity_on_hand),
+                status
+            ])
+        
+        if len(inventory_data) > 1:
+            inventory_table = Table(inventory_data, colWidths=[45*mm, 30*mm, 35*mm, 25*mm, 30*mm])
+            inventory_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F0F0F0')])
+            ]))
+            elements.append(inventory_table)
+        else:
+            elements.append(Paragraph("No inventory items found.", styles['Normal']))
+        
+        elements.append(Spacer(1, 15*mm))
+        
+        # ===== MATERIAL USAGE SECTION =====
+        elements.append(Paragraph("3. Material Consumption Summary", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        txns = InventoryTransaction.query.join(Inventory).filter(
+            InventoryTransaction.created_at.between(start_date, end_date),
+            InventoryTransaction.transaction_type == 'stock_out'
+        ).all()
+        
+        total_consumed = sum(abs(t.change_amount) for t in txns)
+        elements.append(Paragraph(f"<b>Total Units Consumed:</b> {total_consumed} sheets", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        # Material Usage Table
+        usage_data = [['Date', 'Material', 'Color', 'Qty', 'Note']]
+        for t in txns[:20]:  # Limit to last 20
+            usage_data.append([
+                t.created_at.strftime('%Y-%m-%d'),
+                f"{t.item.material_name} {t.item.thickness_mm}mm",
+                t.item.color or 'N/A',
+                str(abs(t.change_amount)),
+                t.note or '-'
+            ])
+        
+        if len(usage_data) > 1:
+            usage_table = Table(usage_data, colWidths=[30*mm, 45*mm, 30*mm, 20*mm, 50*mm])
+            usage_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#E89D3C')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F0F0F0')])
+            ]))
+            elements.append(usage_table)
+        else:
+            elements.append(Paragraph("No material consumption records for this period.", styles['Normal']))
+        
+        # Footer
+        elements.append(Spacer(1, 20*mm))
+        footer_style = ParagraphStyle(
+            'Footer',
+            parent=styles['Normal'],
+            fontSize=8,
+            textColor=colors.HexColor('#999999'),
+            alignment=TA_CENTER
+        )
+        elements.append(Paragraph("This is an automated report generated by BrainGain Tech CNC/Laser Pricing System", footer_style))
+        elements.append(Paragraph(f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", footer_style))
+        
+        # Build PDF
+        doc.build(elements)
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        
+        return pdf_data
+        
+    except Exception as e:
+        app.logger.exception("Error generating comprehensive PDF report")
+        return None
+
+def generate_pdf_report(report_type, start_date, end_date):
+    """
+    Generate a PDF report buffer for the given type and date range
+    Returns: BytesIO buffer containing PDF data, or None on error
+    """
+    try:
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
         elements = []
@@ -1916,7 +2194,7 @@ def download_report():
             col_widths = [35*mm, 50*mm, 30*mm, 20*mm, 50*mm]
 
         else:
-            return jsonify({'error': 'Invalid report type'}), 400
+            return None
 
         # --- Build Table ---
         if len(data) > 1:
@@ -1934,10 +2212,47 @@ def download_report():
         else:
             elements.append(Paragraph("No records found for this period.", styles['Normal']))
 
-        # --- Finalize ---
+        # --- Build PDF ---
         doc.build(elements)
         pdf_data = buffer.getvalue()
         buffer.close()
+        
+        return pdf_data
+        
+    except Exception as e:
+        print(f"Error generating PDF report: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+# ========================================
+# REPORT GENERATION ROUTES
+# ========================================
+
+@app.route('/api/admin/report/download')
+@requires_auth
+def download_report():
+    """Generate and download PDF reports"""
+    try:
+        report_type = request.args.get('type')
+        start_date_str = request.args.get('start_date')
+        end_date_str = request.args.get('end_date')
+        
+        # Parse dates
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+            # Set end date to end of day
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        else:
+            # Default to last 30 days
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+
+        # Generate PDF using helper function
+        pdf_data = generate_pdf_report(report_type, start_date, end_date)
+        
+        if pdf_data is None:
+            return jsonify({'error': 'Invalid report type or generation failed'}), 400
 
         response = make_response(pdf_data)
         response.headers['Content-Type'] = 'application/pdf'
@@ -3096,6 +3411,9 @@ def health():
         'company': 'BrainGain Tech Innovation Solutions'
     })
 
+@app.route('/healthcheck')
+def healthcheck():
+    return "OK", 200
 # ========================================
 # APPLICATION INITIALIZATION
 # ========================================
@@ -3120,6 +3438,113 @@ def init_app():
             ])
             df.to_csv(CSV_PATH, index=False)
             print("Created empty training CSV")
+
+# ========================================
+# SCHEDULED DAILY REPORT EMAIL
+# ========================================
+
+# --- EMAIL & SCHEDULER CONFIG ---
+class Config:
+    SCHEDULER_API_ENABLED = True
+
+app.config.from_object(Config())
+scheduler = APScheduler()
+scheduler.init_app(app)
+scheduler.start()
+
+def send_daily_report():
+    """Task to generate and email the daily revenue report"""
+    with app.app_context():
+        # Prefer the saved settings email if present
+        settings = Settings.query.first()
+        admin_email = (settings.report_email if settings and settings.report_email else os.getenv("ADMIN_REPORT_EMAIL"))
+        email_user = os.getenv("EMAIL_USER")
+        email_pass = os.getenv("EMAIL_PASS")
+        
+        if not admin_email or not email_user or not email_pass:
+            app.logger.warning("Email configuration incomplete - skipping daily report")
+            return {'success': False, 'error': 'Missing email config. Set ADMIN_REPORT_EMAIL/Settings.report_email, EMAIL_USER, EMAIL_PASS'}
+        
+        now = datetime.now()
+        start_date = now.replace(hour=0, minute=0, second=0)
+        end_date = now.replace(hour=23, minute=59, second=59)
+
+        try:
+            # Generate comprehensive PDF report (revenue, inventory, material usage)
+            pdf_data = generate_comprehensive_pdf_report(start_date, end_date)
+            
+            if pdf_data is None:
+                app.logger.error("Failed to generate comprehensive daily report PDF")
+                return {'success': False, 'error': 'Failed to generate PDF report'}
+            
+            # Prepare Email with PDF attachment
+            msg = MIMEMultipart()
+            msg['From'] = email_user
+            msg['To'] = admin_email
+            msg['Subject'] = f"Daily Business Report - {now.strftime('%d %b %Y')}"
+            
+            body = f"""Hello Admin,
+
+Please find attached the automated daily revenue report for {now.strftime('%B %d, %Y')}.
+
+This report includes all quotes generated and revenue collected for the day.
+
+Best regards,
+BrainGain Tech System"""
+            
+            msg.attach(MIMEText(body, 'plain'))
+            
+            # Attach PDF
+            from email.mime.base import MIMEBase
+            from email import encoders
+            
+            attachment = MIMEBase('application', 'octet-stream')
+            attachment.set_payload(pdf_data)
+            encoders.encode_base64(attachment)
+            attachment.add_header('Content-Disposition', f'attachment; filename=Daily_Report_Comprehensive_{now.strftime("%Y%m%d")}.pdf')
+            msg.attach(attachment)
+            
+            # Send via SMTP_SSL (Port 465) for better firewall compatibility
+            try:
+                app.logger.info("Connecting to smtp.gmail.com:465 with SSL")
+                server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15)
+
+                app.logger.info("Authenticating with SMTP server")
+                server.login(email_user, email_pass)
+
+                app.logger.info(f"Sending report email to {admin_email}")
+                server.send_message(msg)
+                server.quit()
+
+                app.logger.info(f"Daily report email sent successfully to {admin_email}")
+                return {'success': True, 'message': f'Test email sent to {admin_email}'}
+
+            except smtplib.SMTPAuthenticationError as auth_err:
+                error_msg = ("Gmail authentication FAILED: %s. Check: 1) EMAIL_USER and EMAIL_PASS are correct, "
+                             "2) Use App Password if 2FA is enabled, 3) Gmail account allows app access.") % str(auth_err)
+                app.logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+
+            except smtplib.SMTPException as smtp_err:
+                error_msg = f"SMTP error: {str(smtp_err)}. Check SMTP settings and account security."
+                app.logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+
+            except (TimeoutError, ConnectionError, OSError) as conn_err:
+                error_msg = (f"Connection failed: {str(conn_err)}. Port 465 might be blocked. "
+                             "Check firewall, network, or try alternate SMTP host/port.")
+                app.logger.error(error_msg)
+                return {'success': False, 'error': error_msg}
+            
+        except Exception as e:
+            app.logger.exception("Error sending daily report")
+            return {'success': False, 'error': f'Error sending daily report: {str(e)}'}
+
+# --- SCHEDULE THE JOB ---
+# This runs every day at 18:30 (6:30 PM)
+@scheduler.task('cron', id='do_daily_report', hour=18, minute=30)
+def scheduled_report():
+    send_daily_report()
 
 # ========================================
 # RUN APPLICATION
