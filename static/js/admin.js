@@ -204,7 +204,7 @@ async function saveSettings() {
 async function testEmail() {
     const btn = document.querySelector("button[onclick='testEmail()']");
     const originalText = btn.innerHTML;
-    btn.innerHTML = "⏳ Sending...";
+    btn.innerHTML = "Sending...";
     btn.disabled = true;
 
     try {

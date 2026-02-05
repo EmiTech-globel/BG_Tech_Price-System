@@ -27,6 +27,8 @@ from dotenv import load_dotenv
 from functools import wraps
 from flask import Response, request
 from flask_apscheduler import APScheduler
+from sqlalchemy import inspect
+from sqlalchemy.sql import text
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -142,11 +144,10 @@ DATASET_FILENAME = 'cnc_historical_jobs.csv'
 # Logic: Check Persistent Storage (instance/) first. If missing, use Default (data/).
 if os.path.exists(os.path.join(INSTANCE_PATH, MODEL_FILENAME)):
     MODEL_PATH = os.path.join(INSTANCE_PATH, MODEL_FILENAME)
-    print(f"Loading model from Persistent Storage: {MODEL_PATH}")
+    # Startup logging deferred to app context
 else:
     # Fallback to the files you shipped with the code
     MODEL_PATH = os.path.join(DATA_PATH, MODEL_FILENAME)
-    print(f"Loading default model from: {MODEL_PATH}")
 
 # Same logic for the training dataset
 if os.path.exists(os.path.join(INSTANCE_PATH, DATASET_FILENAME)):
@@ -204,6 +205,9 @@ class Quote(db.Model):
     discount_amount = db.Column(db.Float, default=0)
     original_price = db.Column(db.Float)  # Price before discount
     
+    # Status tracking
+    status = db.Column(db.String(20), default='draft')  # draft, confirmed, completed, cancelled
+    
     # Metadata
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     notes = db.Column(db.Text)
@@ -234,6 +238,7 @@ class Quote(db.Model):
             'discount_percentage': self.discount_percentage,
             'discount_amount': self.discount_amount,
             'original_price': self.original_price,
+            'status': self.status,
             'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'notes': self.notes,
             'items': [item.to_dict() for item in self.items] if hasattr(self, 'items') else []
@@ -272,6 +277,7 @@ class QuoteItem(db.Model):
             'id': self.id,
             'item_name': self.item_name,
             'material': self.material,
+            'material_color': self.material_color,
             'thickness_mm': self.thickness_mm,
             'width_mm': self.width_mm,
             'height_mm': self.height_mm,
@@ -343,6 +349,8 @@ class Inventory(db.Model):
             "color": self.color or "N/A",
             "thickness": self.thickness_mm,
             "size": f"{self.sheet_width_mm}x{self.sheet_height_mm}",
+            "sheet_width_mm": self.sheet_width_mm,
+            "sheet_height_mm": self.sheet_height_mm,
             "stock": self.quantity_on_hand,
             "price_sq_ft": self.price_per_sq_ft,
             "price_sheet": self.price_per_sheet  # NEW FIELD
@@ -363,6 +371,47 @@ class InventoryTransaction(db.Model):
             "type": self.transaction_type,
             "change": self.change_amount,
             "note": self.note
+        }
+
+class Offcut(db.Model):
+    """Track partial/leftover sheets (offcuts) for reuse in future jobs"""
+    __tablename__ = 'offcut'
+    id = db.Column(db.Integer, primary_key=True)
+    inventory_id = db.Column(db.Integer, db.ForeignKey('inventory.id'), nullable=False)
+    quote_id = db.Column(db.Integer, db.ForeignKey('quote.id'), nullable=True)  # Which job created it
+    
+    # Offcut dimensions (remaining usable area)
+    width_mm = db.Column(db.Float, nullable=False)
+    height_mm = db.Column(db.Float, nullable=False)
+    
+    # Status
+    status = db.Column(db.String(20), default='available')  # available, used, scrapped
+    used_for_quote_id = db.Column(db.Integer, db.ForeignKey('quote.id'), nullable=True)  # Which job used it
+    
+    # Metadata
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    used_at = db.Column(db.DateTime, nullable=True)
+    
+    inventory = db.relationship('Inventory', backref='offcuts')
+    parent_quote = db.relationship('Quote', foreign_keys=[quote_id], backref='created_offcuts')
+    used_in_quote = db.relationship('Quote', foreign_keys=[used_for_quote_id], backref='used_offcuts')
+    
+    def area_sq_ft(self):
+        """Calculate area in square feet"""
+        area_sq_mm = self.width_mm * self.height_mm
+        return area_sq_mm / 92903
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'material': self.inventory.material_name if self.inventory else 'Unknown',
+            'color': self.inventory.color if self.inventory else 'N/A',
+            'thickness_mm': self.inventory.thickness_mm if self.inventory else 0,
+            'width_mm': self.width_mm,
+            'height_mm': self.height_mm,
+            'area_sq_ft': round(self.area_sq_ft(), 2),
+            'status': self.status,
+            'created_at': self.created_at.strftime('%Y-%m-%d %H:%M:%S')
         }
 
 # ========================================
@@ -2814,6 +2863,7 @@ def save_bulk_quote():
             customer_phone=data.get('customer_phone', ''),
             customer_whatsapp=data.get('customer_whatsapp', ''),
             material=first_item.get('material', ''),
+            material_color=first_item.get('color', ''),  # Include color from first item
             thickness_mm=float(first_item.get('thickness', 0)),
             width_mm=float(first_item.get('width', 0)),
             height_mm=float(first_item.get('height', 0)),
@@ -2835,13 +2885,15 @@ def save_bulk_quote():
         
         db.session.add(quote)
         db.session.flush()  # Get the quote.id
+        app.logger.info(f"Bulk quote {quote_number} created with {len(items_data)} items to save")
         
         # Create quote items
-        for item_data in items_data:
+        for idx, item_data in enumerate(items_data):
             quote_item = QuoteItem(
                 quote_id=quote.id,
-                item_name=item_data.get('name', 'Item'),
+                item_name=item_data.get('name', f'Item {idx+1}'),
                 material=item_data.get('material', ''),
+                material_color=item_data.get('color', ''),  # Save color explicitly
                 thickness_mm=float(item_data.get('thickness', 0)),
                 width_mm=float(item_data.get('width', 0)),
                 height_mm=float(item_data.get('height', 0)),
@@ -2855,9 +2907,11 @@ def save_bulk_quote():
                 rush_job=int(item_data.get('rush', 0)),
                 item_price=float(item_data.get('price', 0))
             )
+            app.logger.info(f"  Adding item {idx+1}: {quote_item.item_name} (quote_id={quote.id}) material={quote_item.material} color={quote_item.material_color}")
             db.session.add(quote_item)
         
         db.session.commit()
+        app.logger.info(f"Bulk quote {quote_number} saved successfully with {len(items_data)} items")
         
         return jsonify({
             'success': True,
@@ -2876,16 +2930,337 @@ def save_bulk_quote():
             'traceback': traceback.format_exc()
         })
 
-@app.route('/get_quotes', methods=['GET'])
-def get_quotes():
-    """Get all quotes"""
+# =======================================
+# QUOTE CONFIRMATION & CANCELLATION
+# =======================================
+
+def deduct_material_for_quote(quote, commit=True):
+    """Deduct material from inventory, creating offcuts if needed
+
+    commit: if True, call db.session.commit() at the end. For bulk operations, set commit=False
+    and commit once after all items are handled to make the operation atomic.
+    """
     try:
-        quotes = Quote.query.order_by(Quote.created_at.desc()).all()
+        # Get color from quote (handle both material_color and color attributes)
+        color = getattr(quote, 'material_color', None) or getattr(quote, 'color', None)
+        
+        # Find inventory item - filter by material, thickness, and color
+        filters = [
+            db.func.lower(Inventory.material_name) == quote.material.lower(),
+            Inventory.thickness_mm == quote.thickness_mm
+        ]
+        
+        # Only filter by color if a color is specified, otherwise match any inventory
+        if color:
+            filters.append(db.func.lower(Inventory.color) == color.lower())
+        
+        inventory = Inventory.query.filter(*filters).first()
+        
+        if not inventory:
+            app.logger.warning(f"Material not found: {quote.material} {quote.thickness_mm}mm (color={color})")
+            return False
+
+        # Debug logging for diagnostics
+        app.logger.info(f"Deduction request for {quote.quote_number} - material={quote.material} color={color} size={getattr(quote,'width_mm',None)}x{getattr(quote,'height_mm',None)} qty={getattr(quote,'quantity',None)}. Found inventory id={inventory.id} sheet={inventory.sheet_width_mm}x{inventory.sheet_height_mm} stock={inventory.quantity_on_hand}")
+        
+        # Calculate total area needed (sq mm)
+        MIN_OFFCUT_AREA = 100  # sq mm
+        area_needed_sq_mm = quote.width_mm * quote.height_mm * quote.quantity
+        area_per_sheet_sq_mm = inventory.sheet_width_mm * inventory.sheet_height_mm
+        
+        # First try to use available offcuts (largest first)
+        available_offcuts = Offcut.query.filter_by(inventory_id=inventory.id, status='available').all()
+        for offcut in sorted(available_offcuts, key=lambda o: o.width_mm * o.height_mm, reverse=True):
+            if area_needed_sq_mm <= 0:
+                break
+            offcut_area = offcut.width_mm * offcut.height_mm
+            app.logger.info(f"Considering offcut id={offcut.id} area={offcut_area} for quote {quote.quote_number} remaining_need={area_needed_sq_mm}")
+            if offcut_area >= area_needed_sq_mm:
+                # Use part (or whole) of this offcut
+                remaining_area = offcut_area - area_needed_sq_mm
+                # Mark offcut used for this quote
+                offcut.status = 'used'
+                offcut.used_for_quote_id = quote.id
+                offcut.used_at = datetime.utcnow()
+                app.logger.info(f"Using offcut id={offcut.id} (area {offcut_area}), leftover={remaining_area}")
+
+                # If remaining area is large enough, create a new offcut for the leftover
+                if remaining_area > MIN_OFFCUT_AREA:
+                    leftover_height = remaining_area / offcut.width_mm if offcut.width_mm > 0 else 0
+                    new_offcut = Offcut(
+                        inventory_id=inventory.id,
+                        quote_id=None,
+                        width_mm=offcut.width_mm,
+                        height_mm=leftover_height,
+                        status='available'
+                    )
+                    db.session.add(new_offcut)
+                area_needed_sq_mm = 0
+                break
+            else:
+                # Use entire offcut and continue
+                area_needed_sq_mm -= offcut_area
+                offcut.status = 'used'
+                offcut.used_for_quote_id = quote.id
+                offcut.used_at = datetime.utcnow()
+                app.logger.info(f"Consumed entire offcut id={offcut.id} area={offcut_area}, remaining_need={area_needed_sq_mm}")
+        
+        # If we still need material, deduct full sheets (ceil of remaining area)
+        if area_needed_sq_mm > 0:
+            sheets_needed = math.ceil(area_needed_sq_mm / area_per_sheet_sq_mm)
+            app.logger.info(f"Sheets needed: {sheets_needed}, inventory_stock={inventory.quantity_on_hand}")
+            if inventory.quantity_on_hand < sheets_needed:
+                app.logger.warning(f"Insufficient stock: need {sheets_needed}, have {inventory.quantity_on_hand}")
+                return False
+            
+            inventory.quantity_on_hand -= sheets_needed
+            txn = InventoryTransaction(
+                inventory_id=inventory.id,
+                change_amount=-sheets_needed,
+                transaction_type='stock_out',
+                note=f"Deducted for quote {quote.quote_number}"
+            )
+            db.session.add(txn)
+            
+            # Create offcut from waste if any
+            waste_area = sheets_needed * area_per_sheet_sq_mm - (quote.width_mm * quote.height_mm * quote.quantity)
+            if waste_area > MIN_OFFCUT_AREA:
+                offcut_width = inventory.sheet_width_mm
+                offcut_height = waste_area / offcut_width if offcut_width > 0 else 0
+                offcut = Offcut(
+                    inventory_id=inventory.id,
+                    quote_id=quote.id,
+                    width_mm=offcut_width,
+                    height_mm=offcut_height,
+                    status='available'
+                )
+                db.session.add(offcut)
+        
+        if commit:
+            db.session.commit()
+        return True
+        
+    except Exception as e:
+        app.logger.exception("Error deducting material for quote")
+        db.session.rollback()
+        return False
+
+@app.route('/api/quote/<int:quote_id>/confirm', methods=['POST'])
+@requires_auth
+def confirm_quote(quote_id):
+    """Confirm a quote and deduct inventory"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if not quote:
+            return jsonify({'success': False, 'error': 'Quote not found'}), 404
+        
+        if quote.status != 'draft':
+            return jsonify({'success': False, 'error': f'Quote status is {quote.status}, cannot confirm'}), 400
+        
+        # For bulk quotes, deduct material for all items
+        if hasattr(quote, 'items') and quote.items:
+            app.logger.info(f"Processing bulk quote {quote.quote_number} with {len(quote.items)} items")
+            for item in quote.items:
+                # Create temp object with item data - with ALL required fields
+                class TempQuote:
+                    pass
+                temp = TempQuote()
+                temp.id = quote.id  # IMPORTANT: needed for offcut linking
+                temp.quote_number = quote.quote_number
+                temp.material = item.material
+                temp.material_color = item.material_color  # Include color for filtering
+                temp.thickness_mm = item.thickness_mm
+                temp.width_mm = item.width_mm
+                temp.height_mm = item.height_mm
+                temp.quantity = item.quantity
+                app.logger.info(f"  Item {item.item_name}: material={temp.material} color={temp.material_color} thickness={temp.thickness_mm}mm size={temp.width_mm}x{temp.height_mm}mm qty={temp.quantity}")
+                
+                # Pass commit=False for bulk items (commit all at once at the end)
+                if not deduct_material_for_quote(temp, commit=False):
+                    app.logger.error(f"  FAILED: Insufficient stock for {item.item_name}")
+                    db.session.rollback()
+                    return jsonify({'success': False, 'error': f'Insufficient stock for {item.item_name}'}), 400
+                app.logger.info(f"  SUCCESS: Deducted {item.item_name}")
+            
+            # Commit all deductions at once
+            try:
+                db.session.commit()
+                app.logger.info(f"Bulk quote {quote.quote_number} deductions committed successfully")
+            except Exception as e:
+                app.logger.exception(f"Failed to commit bulk deductions for {quote.quote_number}")
+                db.session.rollback()
+                return jsonify({'success': False, 'error': f'Failed to commit deductions: {str(e)}'}), 400
+        else:
+            # Single item quote
+            app.logger.info(f"Processing single quote {quote.quote_number}: {quote.material} {quote.material_color} {quote.thickness_mm}mm {quote.width_mm}x{quote.height_mm}mm qty={quote.quantity}")
+            if not deduct_material_for_quote(quote, commit=True):
+                app.logger.error(f"FAILED: Insufficient stock for quote {quote.quote_number}")
+                return jsonify({'success': False, 'error': 'Insufficient inventory'}), 400
+            app.logger.info(f"SUCCESS: Single quote {quote.quote_number} deducted")
+        
+        # Update quote status
+        quote.status = 'confirmed'
+        db.session.commit()
+        
+        app.logger.info(f"Quote {quote.quote_number} confirmed and inventory deducted")
         return jsonify({
             'success': True,
-            'quotes': [quote.to_dict() for quote in quotes]
+            'message': f'Quote {quote.quote_number} confirmed. Inventory updated.',
+            'quote': quote.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("Error confirming quote")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/quote/<int:quote_id>/cancel', methods=['POST'])
+@requires_auth
+def cancel_quote(quote_id):
+    """Cancel a quote and restore inventory if needed"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if not quote:
+            return jsonify({'success': False, 'error': 'Quote not found'}), 404
+        
+        if quote.status == 'cancelled':
+            return jsonify({'success': False, 'error': 'Quote already cancelled'}), 400
+        
+        # If confirmed, restore inventory
+        if quote.status == 'confirmed':
+            # Find and reverse deduction transactions
+            txns = InventoryTransaction.query.filter(
+                InventoryTransaction.note.contains(quote.quote_number),
+                InventoryTransaction.transaction_type == 'stock_out'
+            ).all()
+            
+            for txn in txns:
+                # Restore inventory
+                inventory = Inventory.query.get(txn.inventory_id)
+                if inventory:
+                    inventory.quantity_on_hand += abs(txn.change_amount)
+                    
+                    # Create reverse transaction
+                    reverse_txn = InventoryTransaction(
+                        inventory_id=inventory.id,
+                        change_amount=abs(txn.change_amount),
+                        transaction_type='stock_in',
+                        note=f"Restored from cancelled quote {quote.quote_number}"
+                    )
+                    db.session.add(reverse_txn)
+            
+            # Handle offcuts:
+            #  - Offcuts created from this quote (quote_id) should be removed because we are restoring the full sheet
+            #  - Offcuts that were used for this quote (used_for_quote_id) should be restored to available
+            created_offcuts = Offcut.query.filter_by(quote_id=quote.id).all()
+            for offcut in created_offcuts:
+                try:
+                    db.session.delete(offcut)
+                except Exception:
+                    # If delete fails for some reason, fallback to marking available
+                    offcut.status = 'available'
+                    offcut.used_at = None
+
+            used_offcuts = Offcut.query.filter_by(used_for_quote_id=quote.id).all()
+            for offcut in used_offcuts:
+                offcut.status = 'available'
+                offcut.used_for_quote_id = None
+                offcut.used_at = None
+        
+        # Update quote status
+        quote.status = 'cancelled'
+        db.session.commit()
+        
+        app.logger.info(f"Quote {quote.quote_number} cancelled")
+        return jsonify({
+            'success': True,
+            'message': f'Quote {quote.quote_number} cancelled. Inventory restored.',
+            'quote': quote.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("Error cancelling quote")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/quote/<int:quote_id>/mark-completed', methods=['POST'])
+@requires_auth
+def mark_quote_completed(quote_id):
+    """Mark quote as completed"""
+    try:
+        quote = Quote.query.get(quote_id)
+        if not quote:
+            return jsonify({'success': False, 'error': 'Quote not found'}), 404
+        
+        quote.status = 'completed'
+        db.session.commit()
+        
+        app.logger.info(f"Quote {quote.quote_number} marked as completed")
+        return jsonify({
+            'success': True,
+            'message': f'Quote {quote.quote_number} marked as completed',
+            'quote': quote.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("Error marking quote as completed")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/offcuts', methods=['GET'])
+@requires_auth
+def get_offcuts():
+    """Get all available offcuts"""
+    try:
+        offcuts = Offcut.query.filter_by(status='available').all()
+        return jsonify({
+            'success': True,
+            'offcuts': [o.to_dict() for o in offcuts]
         })
     except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/offcut/<int:offcut_id>/mark-scrap', methods=['POST'])
+@requires_auth
+def mark_offcut_scrap(offcut_id):
+    """Mark offcut as scrap (too small to use)"""
+    try:
+        offcut = Offcut.query.get(offcut_id)
+        if not offcut:
+            return jsonify({'success': False, 'error': 'Offcut not found'}), 404
+        
+        offcut.status = 'scrapped'
+        db.session.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Offcut marked as scrap'
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/get_quotes', methods=['GET'])
+def get_quotes():
+    """Get all quotes, optionally filter by ID"""
+    try:
+        quote_id = request.args.get('id', None)
+        
+        if quote_id:
+            try:
+                quote_id = int(quote_id)
+                quotes = [Quote.query.get(quote_id)] if Quote.query.get(quote_id) else []
+            except ValueError:
+                quotes = []
+        else:
+            quotes = Quote.query.order_by(Quote.created_at.desc()).all()
+        
+        return jsonify({
+            'success': True,
+            'quotes': [quote.to_dict() for quote in quotes if quote]
+        })
+    except Exception as e:
+        app.logger.exception("Error in get_quotes")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/search_quotes', methods=['GET'])
@@ -3423,7 +3798,20 @@ def init_app():
     with app.app_context():
         # Create all database tables
         db.create_all()
-        print("✅ Database tables created")
+        app.logger.info("Database tables created")
+        # Ensure `status` column exists on Quote table (backfill if missing)
+        try:
+            inspector = inspect(db.engine)
+            cols = [c['name'] for c in inspector.get_columns('quote')]
+            if 'status' not in cols:
+                app.logger.info("'status' column missing on 'quote' table — adding column")
+                # Add column with default 'draft' for existing rows
+                with db.engine.begin() as conn:
+                    # Use a simple ALTER TABLE; works for PostgreSQL and SQLite
+                    conn.execute(text("ALTER TABLE quote ADD COLUMN status VARCHAR(20) DEFAULT 'draft'"))
+                app.logger.info("Added 'status' column to 'quote' table")
+        except Exception as e:
+            app.logger.exception("Error ensuring 'status' column exists: %s", e)
         
         # Ensure data directory exists
         os.makedirs(os.path.join(basedir, 'data'), exist_ok=True)
@@ -3437,7 +3825,7 @@ def init_app():
                 'quantity', 'rush_job', 'price'
             ])
             df.to_csv(CSV_PATH, index=False)
-            print("Created empty training CSV")
+            app.logger.info("Created empty training CSV")
 
 # ========================================
 # SCHEDULED DAILY REPORT EMAIL
@@ -3451,6 +3839,141 @@ app.config.from_object(Config())
 scheduler = APScheduler()
 scheduler.init_app(app)
 scheduler.start()
+
+def generate_monthly_report_pdf(year, month):
+    """
+    Generate comprehensive monthly report PDF with:
+    - Material Report (most used materials, waste, spend)
+    - Revenue & Profit Report (revenue, costs, profit, top jobs)
+    - Customer Analytics (new customers, repeat, top spenders)
+    """
+    try:
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Calculate date range
+        from calendar import monthrange
+        days_in_month = monthrange(year, month)[1]
+        start_date = datetime(year, month, 1)
+        end_date = datetime(year, month, days_in_month, 23, 59, 59)
+        month_name = start_date.strftime('%B %Y')
+        
+        # Title
+        title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#E89D3C'), alignment=TA_CENTER, spaceAfter=30)
+        elements.append(Spacer(1, 15*mm))
+        elements.append(Paragraph(f"📊 {month_name} Monthly Business Report", title_style))
+        elements.append(Paragraph(f"BrainGain Tech Innovation Solutions", styles['Heading3']))
+        elements.append(Spacer(1, 15*mm))
+        
+        # ===== MATERIAL REPORT =====
+        elements.append(Paragraph("1. Material Report", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        txns = InventoryTransaction.query.join(Inventory).filter(
+            InventoryTransaction.created_at.between(start_date, end_date),
+            InventoryTransaction.transaction_type == 'stock_out'
+        ).all()
+        
+        # Group by material
+        material_usage = {}
+        for t in txns:
+            key = f"{t.item.material_name} {t.item.thickness_mm}mm {t.item.color or 'N/A'}"
+            material_usage[key] = material_usage.get(key, 0) + abs(t.change_amount)
+        
+        # Sort by usage
+        sorted_materials = sorted(material_usage.items(), key=lambda x: x[1], reverse=True)[:10]
+        total_consumed = sum(material_usage.values())
+        total_spend = sum(sum(abs(t.change_amount) * t.item.price_per_sheet for t in txns if t.item.material_name == m.split()[0]) for m in material_usage.keys())
+        
+        elements.append(Paragraph(f"<b>Most Used Materials:</b>", styles['Normal']))
+        for i, (material, qty) in enumerate(sorted_materials, 1):
+            elements.append(Paragraph(f"{i}. {material} - {int(qty)} sheets", styles['Normal']))
+        
+        elements.append(Spacer(1, 5*mm))
+        elements.append(Paragraph(f"<b>Total Material Spend:</b> ₦{total_spend:,.2f}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Total Units Consumed:</b> {int(total_consumed)} sheets", styles['Normal']))
+        elements.append(Spacer(1, 15*mm))
+        
+        # ===== REVENUE & PROFIT REPORT =====
+        elements.append(Paragraph("2. Revenue & Profit Report", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        quotes = Quote.query.filter(Quote.created_at.between(start_date, end_date)).all()
+        confirmed_quotes = [q for q in quotes if q.status in ['confirmed', 'completed']]
+        completed_quotes = [q for q in quotes if q.status == 'completed']
+        
+        total_revenue = sum(q.quoted_price for q in confirmed_quotes)
+        completion_rate = (len(completed_quotes) / len(confirmed_quotes) * 100) if confirmed_quotes else 0
+        
+        elements.append(Paragraph(f"<b>Total Quotes Generated:</b> {len(quotes)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Confirmed Orders:</b> {len(confirmed_quotes)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Completed Orders:</b> {len(completed_quotes)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Completion Rate:</b> {completion_rate:.1f}%", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        elements.append(Paragraph(f"<b>Gross Revenue:</b> ₦{total_revenue:,.2f}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Material Costs:</b> ₦{total_spend:,.2f}", styles['Normal']))
+        estimated_profit = total_revenue - total_spend
+        profit_margin = (estimated_profit / total_revenue * 100) if total_revenue > 0 else 0
+        elements.append(Paragraph(f"<b>Estimated Profit:</b> ₦{estimated_profit:,.2f}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Profit Margin:</b> {profit_margin:.1f}%", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        # Top earning jobs
+        top_jobs = sorted(confirmed_quotes, key=lambda q: q.quoted_price, reverse=True)[:5]
+        elements.append(Paragraph(f"<b>Top Earning Jobs:</b>", styles['Normal']))
+        for i, q in enumerate(top_jobs, 1):
+            elements.append(Paragraph(f"{i}. {q.quote_number} - ₦{q.quoted_price:,.2f}", styles['Normal']))
+        elements.append(Spacer(1, 15*mm))
+        
+        # ===== CUSTOMER ANALYTICS =====
+        elements.append(Paragraph("3. Customer Analytics", styles['Heading1']))
+        elements.append(Spacer(1, 5*mm))
+        
+        all_customers = set(q.customer_name for q in Quote.query.all() if q.customer_name)
+        month_customers = set(q.customer_name for q in quotes if q.customer_name)
+        repeat_customers = len([c for c in month_customers if Quote.query.filter_by(customer_name=c).count() > 1])
+        
+        elements.append(Paragraph(f"<b>New Customers (this month):</b> {len(month_customers)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Repeat Customers:</b> {repeat_customers}", styles['Normal']))
+        elements.append(Paragraph(f"<b>Total Customers:</b> {len(all_customers)}", styles['Normal']))
+        elements.append(Spacer(1, 5*mm))
+        
+        # Top customers by spend
+        customer_spend = {}
+        for q in confirmed_quotes:
+            if q.customer_name:
+                customer_spend[q.customer_name] = customer_spend.get(q.customer_name, 0) + q.quoted_price
+        
+        top_customers = sorted(customer_spend.items(), key=lambda x: x[1], reverse=True)[:5]
+        elements.append(Paragraph(f"<b>Top Customers by Spend:</b>", styles['Normal']))
+        for i, (cust, spend) in enumerate(top_customers, 1):
+            order_count = len([q for q in confirmed_quotes if q.customer_name == cust])
+            elements.append(Paragraph(f"{i}. {cust} - ₦{spend:,.2f} ({order_count} orders)", styles['Normal']))
+        
+        if confirmed_quotes:
+            avg_order_value = total_revenue / len(confirmed_quotes)
+            elements.append(Spacer(1, 5*mm))
+            elements.append(Paragraph(f"<b>Average Order Value:</b> ₦{avg_order_value:,.2f}", styles['Normal']))
+        
+        # Footer
+        elements.append(Spacer(1, 20*mm))
+        footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#999999'), alignment=TA_CENTER)
+        elements.append(Paragraph("This is an automated monthly report generated by BrainGain Tech Pricing System", footer_style))
+        elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", footer_style))
+        
+        # Build PDF
+        doc.build(elements)
+        pdf_data = buffer.getvalue()
+        buffer.close()
+        
+        return pdf_data
+        
+    except Exception as e:
+        app.logger.exception("Error generating monthly PDF report")
+        return None
 
 def send_daily_report():
     """Task to generate and email the daily revenue report"""
@@ -3545,6 +4068,69 @@ BrainGain Tech System"""
 @scheduler.task('cron', id='do_daily_report', hour=18, minute=30)
 def scheduled_report():
     send_daily_report()
+
+# Monthly report: First day of month at 8:00 AM
+@scheduler.task('cron', id='do_monthly_report', day=1, hour=8, minute=0)
+def scheduled_monthly_report():
+    with app.app_context():
+        # Send last month's report
+        from dateutil.relativedelta import relativedelta
+        now = datetime.now()
+        last_month = now - relativedelta(months=1)
+        
+        settings = Settings.query.first()
+        admin_email = (settings.report_email if settings and settings.report_email else os.getenv("ADMIN_REPORT_EMAIL"))
+        email_user = os.getenv("EMAIL_USER")
+        email_pass = os.getenv("EMAIL_PASS")
+        
+        if not admin_email or not email_user or not email_pass:
+            app.logger.warning("Email configuration incomplete - skipping monthly report")
+            return
+        
+        try:
+            pdf_data = generate_monthly_report_pdf(last_month.year, last_month.month)
+            
+            if pdf_data is None:
+                app.logger.error("Failed to generate monthly report PDF")
+                return
+            
+            msg = MIMEMultipart()
+            msg['From'] = email_user
+            msg['To'] = admin_email
+            msg['Subject'] = f"Monthly Business Report - {last_month.strftime('%B %Y')}"
+            
+            body = f"""Hello Admin,
+
+Please find attached the comprehensive monthly business report for {last_month.strftime('%B %Y')}.
+
+This report includes:
+- Material consumption and spending analysis
+- Revenue, profit, and completion metrics
+- Customer analytics and top performers
+
+Best regards,
+BrainGain Tech System"""
+            
+            msg.attach(MIMEText(body, 'plain'))
+            
+            from email.mime.base import MIMEBase
+            from email import encoders
+            
+            attachment = MIMEBase('application', 'octet-stream')
+            attachment.set_payload(pdf_data)
+            encoders.encode_base64(attachment)
+            attachment.add_header('Content-Disposition', f'attachment; filename=Monthly_Report_{last_month.strftime("%B_%Y")}.pdf')
+            msg.attach(attachment)
+            
+            server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15)
+            server.login(email_user, email_pass)
+            server.send_message(msg)
+            server.quit()
+            
+            app.logger.info(f"Monthly report sent successfully to {admin_email}")
+            
+        except Exception as e:
+            app.logger.exception("Error sending monthly report")
 
 # ========================================
 # RUN APPLICATION

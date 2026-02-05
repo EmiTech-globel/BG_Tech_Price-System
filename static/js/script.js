@@ -596,8 +596,10 @@ function displayResultWithInventory(price, jobData, inventory, warnings) {
     document.getElementById('customerForm').style.display = 'none';
     document.getElementById('saveQuoteBtn').style.display = 'block';
     
-    document.getElementById('resultBox').classList.add('show');
-    document.getElementById('resultBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    const resultBox = document.getElementById('resultBox');
+    resultBox.style.display = 'block'; // Explicitly make the box visible
+    resultBox.classList.add('show');
+    resultBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // Save Quote Functions
@@ -646,7 +648,7 @@ async function saveCurrentQuote() {
         const result = await response.json();
         
         if (result.success) {
-            showNotification('✅ ' + result.message, 'success');
+            showNotification('Quote saved successfully!', 'success');
             
             // Clear form
             document.getElementById('customerName').value = '';
@@ -658,6 +660,24 @@ async function saveCurrentQuote() {
             
             // Reset discount state
             discountAppliedToCurrentQuote = false;
+            
+            // Clear job data to reset everything
+            currentJobData = null;
+            currentPrice = null;
+            document.getElementById('resultBox').style.display = 'none';
+            
+            // Clear upload tab form if it was used
+            document.getElementById('uploadMaterial').value = '';
+            document.getElementById('uploadThickness').value = '';
+            document.getElementById('uploadColor').value = '';
+            document.getElementById('uploadCuttingType').value = 'Laser Cutting';
+            document.getElementById('uploadQuantity').value = '1';
+            document.getElementById('uploadRush').checked = false;
+            document.getElementById('fileInfo').style.display = 'none';
+            document.getElementById('uploadArea').style.display = 'block';
+            
+            // Clear extracted data
+            extractedData = null;
 
             // Refresh quotes list if on quotes tab (only if element exists)
             const quotesTab = document.getElementById('quotes');
@@ -701,6 +721,11 @@ async function loadQuotes() {
 function createQuoteCard(quote) {
     const rushBadge = quote.rush_job ? '<span style="background: #ff6b6b; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">⚡ RUSH</span>' : '';
     const discountBadge = quote.discount_applied ? `<span style="background: #28a745; color: white; padding: 3px 8px; border-radius: 5px; font-size: 0.8em; margin-left: 10px;">${quote.discount_percentage}% OFF</span>` : '';
+    
+    // Status badge
+    const statusMap = { 'draft': 'Draft', 'confirmed': 'Confirmed', 'completed': 'Completed', 'cancelled': 'Cancelled' };
+    const statusClass = `status-${quote.status || 'draft'}`;
+    const statusBadge = `<span class="status-badge ${statusClass}">${statusMap[quote.status || 'draft']}</span>`;
 
     // Price display (shown for both single and bulk quotes)
     let priceHTML = '';
@@ -724,13 +749,14 @@ function createQuoteCard(quote) {
     let itemsHTML = '';
     if (Array.isArray(quote.items) && quote.items.length > 0) {
         const listItems = quote.items.map((it, i) => {
-            const name = it.item_name || it.name || `Item ${i + 1}`;
+            const name = it.item_name || it.name || `Job ${i + 1}`;
             const material = it.material || 'Unknown';
+            const color = it.material_color ? ` (${it.material_color})` : '';
             const thickness = it.thickness_mm || it.thickness || '';
             const w = it.width_mm || it.width || it.w || '';
             const h = it.height_mm || it.height || it.h || '';
             const price = Number(it.item_price || it.price || 0).toLocaleString('en-NG', {minimumFractionDigits: 2});
-            return `<li style="margin-bottom:6px;">• ${name} - ${material} (${thickness}mm) - ${w}×${h}mm - Price: ₦${price}</li>`;
+            return `<li style="margin-bottom:6px;">• ${name} - ${material}${color} (${thickness}mm) - ${w}×${h}mm - Price: ₦${price}</li>`;
         }).join('');
 
         itemsHTML = `
@@ -747,7 +773,7 @@ function createQuoteCard(quote) {
     const singleDetailsHTML = (!Array.isArray(quote.items) || quote.items.length === 0) ? `
         <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.9em;">
-                <div><strong>Material:</strong> ${quote.material} (${quote.thickness_mm || ''}mm)</div>
+                <div><strong>Material:</strong> ${quote.material} ${quote.material_color ? `(${quote.material_color})` : ''} (${quote.thickness_mm || ''}mm)</div>
                 <div><strong>Size:</strong> ${quote.width_mm || ''}×${quote.height_mm || ''}mm</div>
                 <div><strong>Cutting:</strong> ${quote.cutting_type || ''}</div>
                 <div><strong>Quantity:</strong> ${quote.quantity || ''}</div>
@@ -756,12 +782,44 @@ function createQuoteCard(quote) {
             </div>
         </div>
     ` : '';
+    
+    // Action buttons based on status
+    let actionButtonsHTML = `
+        <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Download PDF</button>
+        <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #28a745; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Share</button>
+        <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Delete</button>
+    `;
+    
+    // Add confirm/cancel buttons based on status
+    if (quote.status === 'draft' || !quote.status) {
+        actionButtonsHTML = `
+            <button onclick="showMaterialBreakdown(${quote.id})" style="background: #28a745; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Confirm Order</button>
+            <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Download PDF</button>
+            <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #28a745; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Share</button>
+            <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Delete</button>
+        `;
+    } else if (quote.status === 'confirmed') {
+        actionButtonsHTML = `
+            <button onclick="markQuoteCompleted(${quote.id})" style="background: #ffc107; color: #333; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Mark Completed</button>
+            <button onclick="cancelQuoteOrder(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Cancel Order</button>
+            <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Download</button>
+        `;
+    } else if (quote.status === 'completed') {
+        actionButtonsHTML = `
+            <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Download PDF</button>
+            <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Archive</button>
+        `;
+    } else if (quote.status === 'cancelled') {
+        actionButtonsHTML = `
+            <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Download PDF</button>
+        `;
+    }
 
     return `
         <div style="background: #f9f9f9; border-left: 4px solid #E89D3C; padding: 20px; margin-bottom: 15px; border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px;">
                 <div style="flex:1;">
-                    <h3 style="margin: 0; color: #E89D3C;">${quote.quote_number}${rushBadge}${discountBadge}</h3>
+                    <h3 style="margin: 0; color: #E89D3C;">${quote.quote_number}${statusBadge}${rushBadge}${discountBadge}</h3>
                     <div style="font-size: 0.9em; color: #999; margin-bottom:6px;">${quote.created_at}</div>
                 </div>
                 ${priceHTML}
@@ -778,9 +836,7 @@ function createQuoteCard(quote) {
             ${quote.notes ? `<div style="margin-top: 15px; padding: 10px; background: #fff; border-radius: 5px;"><strong>Notes:</strong> ${quote.notes}</div>` : ''}
 
             <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                <button onclick="downloadQuotePDF(${quote.id})" style="background: #E89D3C; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">Download PDF</button>
-                <button onclick="shareQuoteOnWhatsApp(${quote.id}, {whatsapp_number: '${quote.customer_whatsapp || ''}'})" style="background: #25D366; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; flex: 1; min-width: 120px;">📎 Share WhatsApp</button>
-                <button onclick="deleteQuote(${quote.id})" style="background: #dc3545; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer;">Delete</button>
+                ${actionButtonsHTML}
             </div>
         </div>
     `;
@@ -819,7 +875,7 @@ async function searchQuotes() {
 async function deleteQuote(quoteId) {
     // Show confirmation modal instead of plain confirm()
     const confirmed = await showModalChoice(
-        '🗑️ Delete Quote',
+        'Delete Quote',
         'Are you sure you want to delete this quote? This action cannot be undone.',
         [
             { label: 'Cancel', value: 'no' },
@@ -1288,7 +1344,7 @@ function updateBulkItemsDisplay() {
                 </div>
             </div>
             <div class="bulk-item-details">
-                <div><strong>Material:</strong> ${item.material || 'Not selected'} (${item.thickness ? item.thickness : '--'}mm)</div>
+                <div><strong>Material:</strong> ${item.material || 'Not selected'} ${ (item.color || item.material_color) ? `(${item.color || item.material_color})` : '' } (${item.thickness ? item.thickness : '--'}mm)</div>
                 <div><strong>Size:</strong> ${item.width}×${item.height}mm</div>
                 <div><strong>Shapes:</strong> ${item.shapes}</div>
                 <div><strong>Letters:</strong> ${item.letters}</div>

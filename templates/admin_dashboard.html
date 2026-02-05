@@ -34,22 +34,22 @@
         <!-- Tabs Navigation -->
         <div class="tabs">
             <div class="tab active" onclick="showTab('overview')">
-                📊 Overview
+                Overview
             </div>
             <div class="tab" onclick="showTab('quotes')">
-                📋 Saved Quotes
+                Saved Quotes
             </div>
             <div class="tab" onclick="showTab('inventory')">
-                🏭 Inventory
+                Inventory
             </div>
             <div class="tab" onclick="showTab('reports')">
-                📑 Reports
+                Reports
             </div>
             <div class="tab" onclick="showTab('addjob')">
-                ➕ Training Data
+                Training Data
             </div>
             <div class="tab" onclick="showTab('settings')">
-                ⚙️ Settings
+                Settings
             </div>
         </div>
         
@@ -87,13 +87,16 @@
                         <h3 style="margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px;">Quick Actions</h3>
                         <div style="display: flex; flex-direction: column; gap: 10px;">
                             <button onclick="showTab('inventory'); toggleInventoryForm()" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
-                                📦 Add New Stock
+                                Add New Stock
+                            </button>
+                            <button onclick="showOffcutPanel()" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
+                                Manage Offcuts
                             </button>
                             <button onclick="showTab('addjob')" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
-                                🧠 Add Training Data
+                                Add Training Data
                             </button>
                             <button onclick="window.location.href='/'" class="btn" style="text-align: left; background: #f8f9fa; color: #333; border: 1px solid #ddd;">
-                                🖩 Create New Quote
+                                Create New Quote
                             </button>
                         </div>
                     </div>
@@ -102,10 +105,20 @@
             
             <!-- SAVED QUOTES TAB -->
             <div id="quotes" class="tab-content">
-                <div class="row" style="margin-bottom: 20px;">
-                    <div class="form-group">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 10px; flex-wrap: wrap;">
+                    <div class="form-group" style="flex: 1; min-width: 250px;">
                         <label>Search Quotes</label>
                         <input type="text" id="searchQuotes" placeholder="Search by customer name or quote number..." onkeyup="searchQuotes()">
+                    </div>
+                    <div class="form-group" style="flex: 1; min-width: 200px;">
+                        <label>Filter by Status</label>
+                        <select id="statusFilter" onchange="filterQuotesByStatus()" style="padding: 10px; border: 1px solid #ddd; border-radius: 5px; width: 100%;">
+                            <option value="">All Statuses</option>
+                            <option value="draft">Draft</option>
+                            <option value="confirmed">Confirmed</option>
+                            <option value="completed">Completed</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
                     </div>
                 </div>
                 
@@ -220,6 +233,41 @@
              </div>
            </div>
             
+           <!-- OFFCUT MANAGEMENT MODAL -->
+            <div id="offcutPanel" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1001; overflow-y: auto;">
+                <div style="background: white; margin: 20px auto; padding: 30px; border-radius: 10px; width: 90%; max-width: 900px; box-shadow: 0 0 30px rgba(0,0,0,0.3);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="margin: 0; color: #333;">Offcut Management</h2>
+                        <button onclick="closeOffcutPanel()" style="background: #ccc; border: none; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; font-size: 1.2em;">&times;</button>
+                    </div>
+                    <p style="color: #666; margin-bottom: 20px;">Available offcuts from previous jobs. These can be reused for new orders to reduce material waste.</p>
+                    <div id="offcutsList" style="display: grid; gap: 15px; max-height: 400px; overflow-y: auto;">
+                        <div style="text-align: center; color: #999;">
+                            <div class="spinner" style="margin: 20px auto;"></div>
+                            Loading offcuts...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- MATERIAL DEDUCTION CONFIRMATION MODAL -->
+            <div id="confirmMaterialModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+                <div style="background: white; padding: 30px; border-radius: 10px; width: 90%; max-width: 600px; box-shadow: 0 0 30px rgba(0,0,0,0.3);">
+                    <h2 style="margin-top: 0; color: #333;">Material Deduction Breakdown</h2>
+                    <p style="color: #666; margin-bottom: 20px;">This order will deduct the following materials from inventory:</p>
+                    <div id="materialBreakdown" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; max-height: 300px; overflow-y: auto;">
+                        <!-- Populated by JS -->
+                    </div>
+                    <div style="background: #FFF8F0; padding: 15px; border-left: 4px solid #E89D3C; margin-bottom: 20px; border-radius: 5px;">
+                        <strong>Tip:</strong> If exact offcuts are not available, full sheets will be deducted and unused portions saved as new offcuts.
+                    </div>
+                    <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                        <button onclick="closeMaterialModal()" style="background: #ccc; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Cancel</button>
+                        <button id="confirmDeductBtn" onclick="confirmQuoteOrder()" class="btn" style="padding: 10px 20px;">Confirm & Deduct</button>
+                    </div>
+                </div>
+            </div>
+
            <!-- REPORT TAB -->
            <div id="reports" class="tab-content">
                 <h2 style="margin-bottom: 20px;">Generate Business Reports</h2>
@@ -408,5 +456,45 @@
 
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
     <script src="{{ url_for('static', filename='js/admin.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/quote-status.js') }}"></script>
+    <style>
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-left: 10px;
+        }
+        .status-draft { background: #e3f2fd; color: #1976d2; }
+        .status-confirmed { background: #c8e6c9; color: #388e3c; }
+        .status-completed { background: #fff9c4; color: #f57f17; }
+        .status-cancelled { background: #ffcdd2; color: #c62828; }
+        .offcut-card {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .offcut-card:hover {
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-color: #E89D3C;
+        }
+        .action-button {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+        .action-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+    </style>
 </body>
 </html>
