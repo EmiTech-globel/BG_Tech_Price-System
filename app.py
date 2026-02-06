@@ -4054,14 +4054,14 @@ def send_daily_report():
             # If user configured anything, respect it strictly
             if host or port or security:
                 final_host = host or "smtp.gmail.com"
-                final_port = int(port) if port else (465 if security == "ssl" else 587)
-                final_security = security or ("ssl" if final_port == 465 else "starttls")
+                final_port = int(port) if port else (587 if security == "starttls" else 465)
+                final_security = security or ("starttls" if final_port == 587 else "ssl")
                 return [(final_host, final_port, final_security)]
 
             # Default fallbacks
             return [
-                ("smtp.gmail.com", 465, "ssl"),
                 ("smtp.gmail.com", 587, "starttls"),
+                ("smtp.gmail.com", 465, "ssl"),
             ]
 
         def _send_with_smtp(msg_obj, host, port, security_mode):
