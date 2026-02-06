@@ -120,6 +120,8 @@ async function confirmQuoteOrder() {
             closeMaterialModal();
             loadQuotes();
             loadInventory?.();
+            // Update dashboard stats instantly (Quote Today / Orders 7 days)
+            loadDashboardStats?.();
         } else {
             showNotification('Error: ' + (data.error || 'Could not confirm order'), 'error');
         }
@@ -156,6 +158,8 @@ async function cancelQuoteOrder(quoteId) {
             showNotification('✅ Order cancelled and materials restored', 'success');
             loadQuotes();
             loadInventory?.();
+            // Update dashboard stats instantly (Quote Today / Orders 7 days)
+            loadDashboardStats?.();
         } else {
             showNotification('Error: ' + (data.error || 'Could not cancel order'), 'error');
         }
@@ -177,6 +181,8 @@ async function markQuoteCompleted(quoteId) {
         if (data.success) {
             showNotification('🎉 Quote marked as completed', 'success');
             loadQuotes();
+            // Update dashboard stats instantly (Quote Today / Orders 7 days)
+            loadDashboardStats?.();
         } else {
             showNotification('Error: ' + (data.error || 'Could not mark as completed'), 'error');
         }

@@ -1809,11 +1809,19 @@ def admin_stats():
         week_start = now - timedelta(days=7)
 
         # 1. Today's "Revenue" (Quoted Value)
-        today_quotes = Quote.query.filter(Quote.created_at >= today_start).all()
+        # Only track REAL business impact: confirmed + completed (exclude draft/cancelled)
+        today_quotes = Quote.query.filter(
+            Quote.created_at >= today_start,
+            Quote.status.in_(['confirmed', 'completed'])
+        ).all()
         today_value = sum(q.quoted_price for q in today_quotes)
 
-        # 2. Weekly Orders Count
-        week_orders = Quote.query.filter(Quote.created_at >= week_start).count()
+        # 2. Orders Count (last 7 days)
+        # Count only confirmed + completed (exclude cancelled/draft)
+        week_orders = Quote.query.filter(
+            Quote.created_at >= week_start,
+            Quote.status.in_(['confirmed', 'completed'])
+        ).count()
 
         # 3. Low Stock Alert (Threshold: < 5 sheets)
         low_stock_count = Inventory.query.filter(Inventory.quantity_on_hand < 5).count()
@@ -1985,6 +1993,16 @@ def generate_comprehensive_pdf_report(start_date, end_date):
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
         elements = []
         styles = getSampleStyleSheet()
+
+        # Add brand logo (if available)
+        logo_path = os.path.join(basedir, 'static', 'images', 'logo.png')
+        if os.path.exists(logo_path):
+            try:
+                logo = Image(logo_path, width=35*mm, height=35*mm, kind='proportional')
+                elements.append(logo)
+                elements.append(Spacer(1, 5*mm))
+            except Exception:
+                pass
         
         # Title Page
         title_style = ParagraphStyle(
@@ -2164,6 +2182,16 @@ def generate_pdf_report(report_type, start_date, end_date):
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
         elements = []
         styles = getSampleStyleSheet()
+
+        # Add brand logo (if available)
+        logo_path = os.path.join(basedir, 'static', 'images', 'logo.png')
+        if os.path.exists(logo_path):
+            try:
+                logo = Image(logo_path, width=30*mm, height=30*mm, kind='proportional')
+                elements.append(logo)
+                elements.append(Spacer(1, 5*mm))
+            except Exception:
+                pass
         
         # --- Header Section ---
         elements.append(Paragraph(f"BrainGain Tech - {report_type.replace('_', ' ').title()} Report", styles['Heading1']))
@@ -2989,7 +3017,10 @@ def deduct_material_for_quote(quote, commit=True):
                     leftover_height = remaining_area / offcut.width_mm if offcut.width_mm > 0 else 0
                     new_offcut = Offcut(
                         inventory_id=inventory.id,
-                        quote_id=None,
+                        # Important: link to this quote so a cancellation can roll back cleanly.
+                        # Without this, a cancelled quote leaves behind "leftover" offcuts that
+                        # should not exist after restoring the original offcut.
+                        quote_id=getattr(quote, 'id', None),
                         width_mm=offcut.width_mm,
                         height_mm=leftover_height,
                         status='available'
@@ -3126,7 +3157,7 @@ def cancel_quote(quote_id):
         if quote.status == 'cancelled':
             return jsonify({'success': False, 'error': 'Quote already cancelled'}), 400
         
-        # If confirmed, restore inventory
+        # If confirmed, restore inventory/offcuts
         if quote.status == 'confirmed':
             # Find and reverse deduction transactions
             txns = InventoryTransaction.query.filter(
@@ -3166,6 +3197,14 @@ def cancel_quote(quote_id):
                 offcut.status = 'available'
                 offcut.used_for_quote_id = None
                 offcut.used_at = None
+
+            # Safety: also remove any "leftover" offcuts that were created during confirmation
+            # (some older rows may not have quote_id set correctly).
+            # If an offcut is available and was created very recently during this quote confirm flow,
+            # it should not survive a cancellation. We limit this to offcuts tied to this quote_number
+            # through transactions by only deleting those explicitly linked (quote_id == quote.id).
+            # (This block is mostly redundant after the fix above, but keeps existing DBs clean.)
+            Offcut.query.filter_by(quote_id=quote.id, status='available').delete(synchronize_session=False)
         
         # Update quote status
         quote.status = 'cancelled'
@@ -3852,6 +3891,16 @@ def generate_monthly_report_pdf(year, month):
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
         elements = []
         styles = getSampleStyleSheet()
+
+        # Add brand logo (if available)
+        logo_path = os.path.join(basedir, 'static', 'images', 'logo.png')
+        if os.path.exists(logo_path):
+            try:
+                logo = Image(logo_path, width=35*mm, height=35*mm, kind='proportional')
+                elements.append(logo)
+                elements.append(Spacer(1, 5*mm))
+            except Exception:
+                pass
         
         # Calculate date range
         from calendar import monthrange
@@ -3992,6 +4041,58 @@ def send_daily_report():
         start_date = now.replace(hour=0, minute=0, second=0)
         end_date = now.replace(hour=23, minute=59, second=59)
 
+        def _smtp_attempts_from_env():
+            """
+            Build SMTP attempt list.
+            If SMTP_* env vars are set, we ONLY try that config.
+            Otherwise, we try Gmail 465 SSL then Gmail 587 STARTTLS (helps when 465 is blocked).
+            """
+            host = os.getenv("SMTP_HOST")
+            port = os.getenv("SMTP_PORT")
+            security = (os.getenv("SMTP_SECURITY") or "").strip().lower()  # 'ssl' | 'starttls' | ''
+
+            # If user configured anything, respect it strictly
+            if host or port or security:
+                final_host = host or "smtp.gmail.com"
+                final_port = int(port) if port else (465 if security == "ssl" else 587)
+                final_security = security or ("ssl" if final_port == 465 else "starttls")
+                return [(final_host, final_port, final_security)]
+
+            # Default fallbacks
+            return [
+                ("smtp.gmail.com", 465, "ssl"),
+                ("smtp.gmail.com", 587, "starttls"),
+            ]
+
+        def _send_with_smtp(msg_obj, host, port, security_mode):
+            """
+            Send email using either SSL (implicit TLS) or STARTTLS.
+            security_mode: 'ssl' or 'starttls'
+            """
+            timeout = int(os.getenv("SMTP_TIMEOUT", "15"))
+
+            if security_mode == "ssl":
+                app.logger.info(f"Connecting to {host}:{port} with SMTP_SSL")
+                server = smtplib.SMTP_SSL(host, port, timeout=timeout)
+            else:
+                app.logger.info(f"Connecting to {host}:{port} with SMTP + STARTTLS")
+                server = smtplib.SMTP(host, port, timeout=timeout)
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+
+            try:
+                app.logger.info("Authenticating with SMTP server")
+                server.login(email_user, email_pass)
+
+                app.logger.info(f"Sending report email to {admin_email}")
+                server.send_message(msg_obj)
+            finally:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
+
         try:
             # Generate comprehensive PDF report (revenue, inventory, material usage)
             pdf_data = generate_comprehensive_pdf_report(start_date, end_date)
@@ -4027,37 +4128,36 @@ BrainGain Tech System"""
             attachment.add_header('Content-Disposition', f'attachment; filename=Daily_Report_Comprehensive_{now.strftime("%Y%m%d")}.pdf')
             msg.attach(attachment)
             
-            # Send via SMTP_SSL (Port 465) for better firewall compatibility
-            try:
-                app.logger.info("Connecting to smtp.gmail.com:465 with SSL")
-                server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15)
+            last_err = None
+            attempts = _smtp_attempts_from_env()
 
-                app.logger.info("Authenticating with SMTP server")
-                server.login(email_user, email_pass)
+            for (smtp_host, smtp_port, smtp_security) in attempts:
+                try:
+                    _send_with_smtp(msg, smtp_host, smtp_port, smtp_security)
+                    app.logger.info(f"Daily report email sent successfully to {admin_email} via {smtp_host}:{smtp_port} ({smtp_security})")
+                    return {'success': True, 'message': f'Test email sent to {admin_email}'}
 
-                app.logger.info(f"Sending report email to {admin_email}")
-                server.send_message(msg)
-                server.quit()
+                except smtplib.SMTPAuthenticationError as auth_err:
+                    # Auth issues won't be fixed by changing ports—stop early.
+                    error_msg = (
+                        "Gmail authentication FAILED: %s. Check: 1) EMAIL_USER and EMAIL_PASS are correct, "
+                        "2) Use App Password if 2FA is enabled, 3) SMTP access allowed for the account."
+                    ) % str(auth_err)
+                    app.logger.error(error_msg)
+                    return {'success': False, 'error': error_msg}
 
-                app.logger.info(f"Daily report email sent successfully to {admin_email}")
-                return {'success': True, 'message': f'Test email sent to {admin_email}'}
+                except (TimeoutError, ConnectionError, OSError, smtplib.SMTPException) as err:
+                    last_err = err
+                    app.logger.warning(f"SMTP attempt failed via {smtp_host}:{smtp_port} ({smtp_security}): {err}")
+                    continue
 
-            except smtplib.SMTPAuthenticationError as auth_err:
-                error_msg = ("Gmail authentication FAILED: %s. Check: 1) EMAIL_USER and EMAIL_PASS are correct, "
-                             "2) Use App Password if 2FA is enabled, 3) Gmail account allows app access.") % str(auth_err)
-                app.logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
-
-            except smtplib.SMTPException as smtp_err:
-                error_msg = f"SMTP error: {str(smtp_err)}. Check SMTP settings and account security."
-                app.logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
-
-            except (TimeoutError, ConnectionError, OSError) as conn_err:
-                error_msg = (f"Connection failed: {str(conn_err)}. Port 465 might be blocked. "
-                             "Check firewall, network, or try alternate SMTP host/port.")
-                app.logger.error(error_msg)
-                return {'success': False, 'error': error_msg}
+            # All attempts failed
+            error_msg = (
+                f"Error in mail connection failed: {str(last_err)}. "
+                "Port 465 might be blocked. check firewall, networks or try alternate SMTP host/Port."
+            )
+            app.logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
             
         except Exception as e:
             app.logger.exception("Error sending daily report")
@@ -4122,10 +4222,55 @@ BrainGain Tech System"""
             attachment.add_header('Content-Disposition', f'attachment; filename=Monthly_Report_{last_month.strftime("%B_%Y")}.pdf')
             msg.attach(attachment)
             
-            server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=15)
-            server.login(email_user, email_pass)
-            server.send_message(msg)
-            server.quit()
+            # Use same SMTP fallback behavior as daily report
+            def _smtp_attempts_from_env():
+                host = os.getenv("SMTP_HOST")
+                port = os.getenv("SMTP_PORT")
+                security = (os.getenv("SMTP_SECURITY") or "").strip().lower()
+
+                if host or port or security:
+                    final_host = host or "smtp.gmail.com"
+                    final_port = int(port) if port else (465 if security == "ssl" else 587)
+                    final_security = security or ("ssl" if final_port == 465 else "starttls")
+                    return [(final_host, final_port, final_security)]
+
+                return [
+                    ("smtp.gmail.com", 465, "ssl"),
+                    ("smtp.gmail.com", 587, "starttls"),
+                ]
+
+            def _send_with_smtp(msg_obj, host, port, security_mode):
+                timeout = int(os.getenv("SMTP_TIMEOUT", "15"))
+                if security_mode == "ssl":
+                    server = smtplib.SMTP_SSL(host, port, timeout=timeout)
+                else:
+                    server = smtplib.SMTP(host, port, timeout=timeout)
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                try:
+                    server.login(email_user, email_pass)
+                    server.send_message(msg_obj)
+                finally:
+                    try:
+                        server.quit()
+                    except Exception:
+                        pass
+
+            last_err = None
+            for (smtp_host, smtp_port, smtp_security) in _smtp_attempts_from_env():
+                try:
+                    _send_with_smtp(msg, smtp_host, smtp_port, smtp_security)
+                    last_err = None
+                    break
+                except smtplib.SMTPAuthenticationError:
+                    raise
+                except (TimeoutError, ConnectionError, OSError, smtplib.SMTPException) as err:
+                    last_err = err
+                    continue
+
+            if last_err:
+                raise last_err
             
             app.logger.info(f"Monthly report sent successfully to {admin_email}")
             
