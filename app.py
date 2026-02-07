@@ -3871,13 +3871,13 @@ def init_app():
 # ========================================
 
 # --- EMAIL & SCHEDULER CONFIG ---
-class Config:
-    SCHEDULER_API_ENABLED = True
+# class Config:
+#     SCHEDULER_API_ENABLED = True
 
-app.config.from_object(Config())
-scheduler = APScheduler()
-scheduler.init_app(app)
-scheduler.start()
+# app.config.from_object(Config())
+# scheduler = APScheduler()
+# scheduler.init_app(app)
+# scheduler.start()
 
 def generate_monthly_report_pdf(year, month):
     """
