@@ -3871,13 +3871,13 @@ def init_app():
 # ========================================
 
 # --- EMAIL & SCHEDULER CONFIG ---
-# class Config:
-#     SCHEDULER_API_ENABLED = True
+class Config:
+    SCHEDULER_API_ENABLED = True
 
-# app.config.from_object(Config())
-# scheduler = APScheduler()
-# scheduler.init_app(app)
-# scheduler.start()
+app.config.from_object(Config())
+scheduler = APScheduler()
+scheduler.init_app(app)
+scheduler.start()
 
 def generate_monthly_report_pdf(year, month):
     """
@@ -4044,25 +4044,45 @@ def send_daily_report():
         def _smtp_attempts_from_env():
             """
             Build SMTP attempt list.
-            If SMTP_* env vars are set, we ONLY try that config.
-            Otherwise, we try Gmail 465 SSL then Gmail 587 STARTTLS (helps when 465 is blocked).
+            If SMTP_* env vars are set, we try that config FIRST.
+            Then we ALWAYS try Gmail 587 STARTTLS and 465 SSL as fallbacks.
+            This robustness is critical for environments like Render where 465 might be blocked.
             """
+            attempts = []
+            
             host = os.getenv("SMTP_HOST")
             port = os.getenv("SMTP_PORT")
-            security = (os.getenv("SMTP_SECURITY") or "").strip().lower()  # 'ssl' | 'starttls' | ''
+            security = (os.getenv("SMTP_SECURITY") or "").strip().lower()
 
-            # If user configured anything, respect it strictly
+            # 1. User configured settings (Priority 1)
             if host or port or security:
                 final_host = host or "smtp.gmail.com"
-                final_port = int(port) if port else (587 if security == "starttls" else 465)
-                final_security = security or ("starttls" if final_port == 587 else "ssl")
-                return [(final_host, final_port, final_security)]
+                # Infer port/security if one is missing
+                if port:
+                    final_port = int(port)
+                    final_security = security or ("ssl" if final_port == 465 else "starttls")
+                else:
+                    final_security = security or "starttls"
+                    final_port = 465 if final_security == "ssl" else 587
+                
+                attempts.append((final_host, final_port, final_security))
 
-            # Default fallbacks
-            return [
+            # 2. Standard Gmail Fallbacks (Priority 2 & 3)
+            # We add these even if user configured something, because their config might be failing
+            # (e.g. they forced 465 but only 587 works in this network).
+            # We avoid duplicates if the user's config matches one of these.
+            
+            defaults = [
                 ("smtp.gmail.com", 587, "starttls"),
                 ("smtp.gmail.com", 465, "ssl"),
             ]
+            
+            for d_host, d_port, d_sec in defaults:
+                # specific check to avoid exact duplicate of the user's config
+                if not any(a[0] == d_host and a[1] == d_port for a in attempts):
+                     attempts.append((d_host, d_port, d_sec))
+            
+            return attempts
 
         def _send_with_smtp(msg_obj, host, port, security_mode):
             """
@@ -4224,20 +4244,31 @@ BrainGain Tech System"""
             
             # Use same SMTP fallback behavior as daily report
             def _smtp_attempts_from_env():
+                attempts = []
                 host = os.getenv("SMTP_HOST")
                 port = os.getenv("SMTP_PORT")
                 security = (os.getenv("SMTP_SECURITY") or "").strip().lower()
 
                 if host or port or security:
                     final_host = host or "smtp.gmail.com"
-                    final_port = int(port) if port else (465 if security == "ssl" else 587)
-                    final_security = security or ("ssl" if final_port == 465 else "starttls")
-                    return [(final_host, final_port, final_security)]
+                    if port:
+                        final_port = int(port)
+                        final_security = security or ("ssl" if final_port == 465 else "starttls")
+                    else:
+                        final_security = security or "starttls"
+                        final_port = 465 if final_security == "ssl" else 587
+                    attempts.append((final_host, final_port, final_security))
 
-                return [
-                    ("smtp.gmail.com", 465, "ssl"),
+                defaults = [
                     ("smtp.gmail.com", 587, "starttls"),
+                    ("smtp.gmail.com", 465, "ssl"),
                 ]
+                
+                for d_host, d_port, d_sec in defaults:
+                    if not any(a[0] == d_host and a[1] == d_port for a in attempts):
+                         attempts.append((d_host, d_port, d_sec))
+                
+                return attempts
 
             def _send_with_smtp(msg_obj, host, port, security_mode):
                 timeout = int(os.getenv("SMTP_TIMEOUT", "15"))
